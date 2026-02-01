@@ -326,37 +326,27 @@ export async function closePosition(
   rpc: Rpc<any>,
   connection: Connection,
   signer: KeyPairSigner,
-  positionAddress: string,
+  positionMintAddress: string,
   dryRun: boolean
 ): Promise<boolean> {
-  logger.info(`Closing position ${positionAddress}`);
+  logger.info(`Closing position with mint ${positionMintAddress}`);
   
-  const posAddr = address(positionAddress);
-  const position = await fetchPosition(rpc, posAddr);
+  const mintAddr = address(positionMintAddress);
   
   if (dryRun) {
-    logger.info('[DRY RUN] Would remove liquidity and close position', {
-      liquidityToRemove: position.data.liquidity.toString(),
-    });
+    logger.info('[DRY RUN] Would remove liquidity and close position');
     return true;
   }
   
   try {
-    // First decrease all liquidity if any
-    if (position.data.liquidity > BigInt(0)) {
-      const slippage = 100; // 1% in basis points
-      const { instructions: decreaseIx } = await decreaseLiquidityInstructions(
-        rpc,
-        posAddr,
-        { liquidity: position.data.liquidity },
-        slippage,
-        signer
-      );
-      logger.info('Liquidity decrease instructions generated');
-    }
-    
-    // Then close position
-    const { instructions: closeIx } = await closePositionInstructions(rpc, posAddr, signer);
+    // closePositionInstructions handles decreasing liquidity and closing
+    const slippage = 100; // 1% in basis points
+    const { instructions: closeIx } = await closePositionInstructions(
+      rpc, 
+      mintAddr, 
+      slippage, 
+      signer
+    );
     logger.info('Position close instructions generated');
     
     return true;
@@ -376,26 +366,37 @@ export async function openPosition(
   whirlpoolAddress: string,
   lowerTick: number,
   upperTick: number,
+  decimalsA: number,
+  decimalsB: number,
   dryRun: boolean
 ): Promise<string | null> {
   logger.info(`Opening new position: ticks [${lowerTick}, ${upperTick}]`);
   
   const whirlpoolAddr = address(whirlpoolAddress);
   
+  // Convert ticks to prices for the SDK
+  const lowerPrice = tickIndexToPrice(lowerTick, decimalsA, decimalsB);
+  const upperPrice = tickIndexToPrice(upperTick, decimalsA, decimalsB);
+  
   if (dryRun) {
     logger.info('[DRY RUN] Would open new position', {
       lowerTick,
       upperTick,
+      lowerPrice,
+      upperPrice,
     });
     return null;
   }
   
   try {
+    const slippage = 100; // 1% in basis points
     const { instructions, positionMint } = await openPositionInstructions(
       rpc,
       whirlpoolAddr,
-      { tickLowerIndex: lowerTick, tickUpperIndex: upperTick },
-      100, // 1% slippage
+      { tokenA: BigInt(0) }, // Will deposit later
+      lowerPrice,
+      upperPrice,
+      slippage,
       signer
     );
     
@@ -415,14 +416,14 @@ export async function depositLiquidity(
   rpc: Rpc<any>,
   connection: Connection,
   signer: KeyPairSigner,
-  positionAddress: string,
+  positionMintAddress: string,
   tokenAAmount: bigint,
   tokenBAmount: bigint,
   dryRun: boolean
 ): Promise<boolean> {
-  logger.info(`Depositing liquidity into position ${positionAddress}`);
+  logger.info(`Depositing liquidity into position with mint ${positionMintAddress}`);
   
-  const posAddr = address(positionAddress);
+  const mintAddr = address(positionMintAddress);
   
   if (dryRun) {
     logger.info('[DRY RUN] Would deposit liquidity', {
@@ -437,7 +438,7 @@ export async function depositLiquidity(
     const slippage = 100; // 1% in basis points
     const { instructions } = await increaseLiquidityInstructions(
       rpc,
-      posAddr,
+      mintAddr,
       { tokenA: tokenAAmount },
       slippage,
       signer
