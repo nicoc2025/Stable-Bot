@@ -3,15 +3,11 @@
  * Implements trigger logic with dwell time and anti-thrashing
  */
 
-import DecimalJS from 'decimal.js';
 import { getLogger } from './logger.js';
 import type { WhirlpoolInfo, PositionInfo, PriceRange } from './orca.js';
 import { isPriceInRange, calculateEdgeDistance, tickToPrice } from './orca.js';
 
 const logger = getLogger('Strategy');
-
-// Use default Decimal export
-const Decimal = DecimalJS.default || DecimalJS;
 
 export type TriggerReason = 
   | 'out_of_range'
@@ -47,11 +43,11 @@ export interface TriggerResult {
   reason: TriggerReason;
   details: {
     currentTick: number;
-    currentPrice: DecimalJS;
+    currentPrice: number;
     lowerTick: number;
     upperTick: number;
-    lowerPrice: DecimalJS;
-    upperPrice: DecimalJS;
+    lowerPrice: number;
+    upperPrice: number;
     edgeDistance?: { lower: number; upper: number };
     dwellElapsed?: number;
     timeSinceLastRebalance?: number;
@@ -99,21 +95,17 @@ export function evaluateTrigger(
   if (!inRange) {
     // Price is completely out of range - always trigger
     triggerReason = 'out_of_range';
-    logger.outOfRange(
-      currentPrice.toNumber(),
-      lowerPrice.toNumber(),
-      upperPrice.toNumber()
-    );
+    logger.outOfRange(currentPrice, lowerPrice, upperPrice);
   } else if (params.edgeBufferPercent > 0) {
     // Check edge buffer conditions
     const edgeDistance = calculateEdgeDistance(currentTick, lowerTick, upperTick);
     
     if (edgeDistance.lower < params.edgeBufferPercent) {
       triggerReason = 'near_lower_edge';
-      logger.edgeHit('lower', currentPrice.toNumber(), lowerPrice.toNumber());
+      logger.edgeHit('lower', currentPrice, lowerPrice);
     } else if (edgeDistance.upper < params.edgeBufferPercent) {
       triggerReason = 'near_upper_edge';
-      logger.edgeHit('upper', currentPrice.toNumber(), upperPrice.toNumber());
+      logger.edgeHit('upper', currentPrice, upperPrice);
     }
   }
   

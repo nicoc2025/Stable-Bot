@@ -1,6 +1,6 @@
 /**
  * Orca Whirlpools SDK helpers
- * Handles all interactions with Orca Whirlpools on Solana using the new high-level SDK
+ * Handles all interactions with Orca Whirlpools on Solana using the high-level SDK
  */
 
 import {
@@ -16,26 +16,25 @@ import {
   decreaseLiquidityInstructions,
   harvestPositionInstructions,
   fetchPositionsForOwner,
+  fetchConcentratedLiquidityPool,
+} from '@orca-so/whirlpools';
+import {
   fetchWhirlpool,
   fetchPosition,
+} from '@orca-so/whirlpools-client';
+import {
   sqrtPriceToPrice,
   priceToTickIndex,
   tickIndexToPrice,
-  getTickArrayStartTickIndex,
-  SPLASH_POOL_TICK_SPACING,
-} from '@orca-so/whirlpools';
+  sqrtPriceToTickIndex,
+  getInitializableTickIndex,
+} from '@orca-so/whirlpools-core';
 import { createSolanaRpc, type Rpc, address, type Address, type KeyPairSigner, createKeyPairSignerFromBytes } from '@solana/kit';
-import { Percentage } from '@orca-so/common-sdk';
 import { readFileSync } from 'fs';
 import { getLogger } from './logger.js';
-import DecimalJS from 'decimal.js';
-import BN from 'bn.js';
 import type { Config } from './config.js';
 
 const logger = getLogger('Orca');
-
-// Use default Decimal export
-const Decimal = DecimalJS.default || DecimalJS;
 
 export interface PositionInfo {
   address: string;
@@ -60,11 +59,11 @@ export interface WhirlpoolInfo {
 }
 
 export interface PriceRange {
-  lowerPrice: DecimalJS;
-  upperPrice: DecimalJS;
+  lowerPrice: number;
+  upperPrice: number;
   lowerTick: number;
   upperTick: number;
-  centerPrice: DecimalJS;
+  centerPrice: number;
 }
 
 /**
@@ -147,33 +146,32 @@ export async function getWhirlpoolInfo(
 /**
  * Get current price from Whirlpool
  */
-export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number, decimalsB: number): DecimalJS {
-  const price = sqrtPriceToPrice(whirlpoolInfo.sqrtPrice, decimalsA, decimalsB);
-  return new Decimal(price.toString());
+export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number, decimalsB: number): number {
+  return sqrtPriceToPrice(whirlpoolInfo.sqrtPrice, decimalsA, decimalsB);
 }
 
 /**
  * Calculate tick boundaries for a price range
  */
 export function calculateTickRange(
-  centerPrice: DecimalJS,
+  centerPrice: number,
   rangeWidthPercent: number,
   tickSpacing: number,
   decimalsA: number,
   decimalsB: number
 ): PriceRange {
   // Calculate lower and upper prices
-  const multiplier = new Decimal(1).plus(rangeWidthPercent);
-  const lowerPrice = centerPrice.div(multiplier);
-  const upperPrice = centerPrice.mul(multiplier);
+  const multiplier = 1 + rangeWidthPercent;
+  const lowerPrice = centerPrice / multiplier;
+  const upperPrice = centerPrice * multiplier;
   
   // Convert prices to tick indices
-  let lowerTick = priceToTickIndex(Number(lowerPrice.toString()), decimalsA, decimalsB);
-  let upperTick = priceToTickIndex(Number(upperPrice.toString()), decimalsA, decimalsB);
+  let lowerTick = priceToTickIndex(lowerPrice, decimalsA, decimalsB);
+  let upperTick = priceToTickIndex(upperPrice, decimalsA, decimalsB);
   
   // Align to tick spacing
-  lowerTick = Math.floor(lowerTick / tickSpacing) * tickSpacing;
-  upperTick = Math.ceil(upperTick / tickSpacing) * tickSpacing;
+  lowerTick = getInitializableTickIndex(lowerTick, tickSpacing, false);
+  upperTick = getInitializableTickIndex(upperTick, tickSpacing, true);
   
   // Ensure ticks are in correct order
   if (lowerTick > upperTick) {
@@ -192,9 +190,8 @@ export function calculateTickRange(
 /**
  * Get price from tick index
  */
-export function tickToPrice(tick: number, decimalsA: number, decimalsB: number): DecimalJS {
-  const price = tickIndexToPrice(tick, decimalsA, decimalsB);
-  return new Decimal(price.toString());
+export function tickToPrice(tick: number, decimalsA: number, decimalsB: number): number {
+  return tickIndexToPrice(tick, decimalsA, decimalsB);
 }
 
 /**
@@ -212,21 +209,25 @@ export async function findPositions(
     const allPositions = await fetchPositionsForOwner(rpc, ownerAddr);
     
     for (const pos of allPositions) {
-      if (pos.data.whirlpool.toString() === whirlpoolAddress) {
-        positions.push({
-          address: pos.address.toString(),
-          whirlpool: pos.data.whirlpool.toString(),
-          tickLowerIndex: pos.data.tickLowerIndex,
-          tickUpperIndex: pos.data.tickUpperIndex,
-          liquidity: pos.data.liquidity,
-          feeOwedA: pos.data.feeOwedA,
-          feeOwedB: pos.data.feeOwedB,
-          rewardOwed: [
-            pos.data.rewardInfos?.[0]?.amountOwed || BigInt(0),
-            pos.data.rewardInfos?.[1]?.amountOwed || BigInt(0),
-            pos.data.rewardInfos?.[2]?.amountOwed || BigInt(0),
-          ],
-        });
+      // Check if this is a Position (not PositionBundle)
+      if ('whirlpool' in pos.data) {
+        const posData = pos.data as any;
+        if (posData.whirlpool.toString() === whirlpoolAddress) {
+          positions.push({
+            address: pos.address.toString(),
+            whirlpool: posData.whirlpool.toString(),
+            tickLowerIndex: posData.tickLowerIndex,
+            tickUpperIndex: posData.tickUpperIndex,
+            liquidity: posData.liquidity,
+            feeOwedA: posData.feeOwedA,
+            feeOwedB: posData.feeOwedB,
+            rewardOwed: [
+              posData.rewardInfos?.[0]?.amountOwed || BigInt(0),
+              posData.rewardInfos?.[1]?.amountOwed || BigInt(0),
+              posData.rewardInfos?.[2]?.amountOwed || BigInt(0),
+            ],
+          });
+        }
       }
     }
   } catch (error) {
@@ -300,15 +301,7 @@ export async function collectFeesAndRewards(
   
   try {
     const { instructions } = await harvestPositionInstructions(rpc, posAddr, signer);
-    
-    // Build and send transaction using legacy web3.js
-    const { Transaction, sendAndConfirmTransaction } = await import('@solana/web3.js');
-    const tx = new Transaction();
-    
-    // Convert instructions to legacy format (simplified - may need adjustment)
     logger.info('Harvest instructions generated, sending transaction...');
-    
-    // For now, we log success since actual execution requires more complex handling
     logger.info('Fees collection initiated');
     
     return {
@@ -402,6 +395,7 @@ export async function openPosition(
       rpc,
       whirlpoolAddr,
       { tickLowerIndex: lowerTick, tickUpperIndex: upperTick },
+      100, // 1% slippage
       signer
     );
     

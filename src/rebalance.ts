@@ -4,7 +4,6 @@
  */
 
 import { PublicKey } from '@solana/web3.js';
-import DecimalJS from 'decimal.js';
 import { getLogger } from './logger.js';
 import {
   createOrcaConnection,
@@ -26,9 +25,6 @@ import type { StrategyState } from './strategy.js';
 import { markRebalanceComplete } from './strategy.js';
 
 const logger = getLogger('Rebalance');
-
-// Use default Decimal export
-const Decimal = DecimalJS.default || DecimalJS;
 
 export interface RebalanceResult {
   success: boolean;
@@ -193,7 +189,7 @@ export async function executeRebalance(
       oldUpperTick: currentPosition.tickUpperIndex,
       newLowerTick: newRange.lowerTick,
       newUpperTick: newRange.upperTick,
-      newCenterPrice: currentPrice.toNumber(),
+      newCenterPrice: currentPrice,
       feesCollected: result.feesCollected,
       txSignatures: transactions,
     });
@@ -228,8 +224,8 @@ export function simulateRebalance(
   const currentRange: PriceRange = {
     lowerTick: currentPosition.tickLowerIndex,
     upperTick: currentPosition.tickUpperIndex,
-    lowerPrice: new Decimal(0),
-    upperPrice: new Decimal(0),
+    lowerPrice: 0,
+    upperPrice: 0,
     centerPrice: currentPrice,
   };
   
