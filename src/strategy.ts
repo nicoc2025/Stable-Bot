@@ -105,10 +105,10 @@ export function evaluateTrigger(
     // Check edge buffer conditions
     const edgeDistance = calculateEdgeDistance(currentTick, lowerTick, upperTick);
     
-    if (edgeDistance.lowerDistance < params.edgeBufferPercent) {
+    if (edgeDistance.lower < params.edgeBufferPercent) {
       triggerReason = 'near_lower_edge';
       logger.edgeHit('lower', currentPrice.toNumber(), lowerPrice.toNumber());
-    } else if (edgeDistance.upperDistance < params.edgeBufferPercent) {
+    } else if (edgeDistance.upper < params.edgeBufferPercent) {
       triggerReason = 'near_upper_edge';
       logger.edgeHit('upper', currentPrice.toNumber(), upperPrice.toNumber());
     }
@@ -125,7 +125,7 @@ export function evaluateTrigger(
       lowerPrice,
       upperPrice,
       edgeDistance: inRange 
-        ? calculateEdgeDistance(currentTick, lowerTick, upperTick)
+        ? { lower: calculateEdgeDistance(currentTick, lowerTick, upperTick).lower, upper: calculateEdgeDistance(currentTick, lowerTick, upperTick).upper }
         : undefined,
     },
   };

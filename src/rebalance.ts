@@ -11,7 +11,6 @@ import {
   getWhirlpoolInfo,
   getCurrentPrice,
   calculateTickRange,
-  findPositions,
   collectFeesAndRewards,
   closePosition,
   openPosition,
@@ -221,8 +220,8 @@ export function simulateRebalance(
   const currentRange: PriceRange = {
     lowerTick: currentPosition.tickLowerIndex,
     upperTick: currentPosition.tickUpperIndex,
-    lowerPrice: new Decimal(0), // Will be calculated
-    upperPrice: new Decimal(0), // Will be calculated
+    lowerPrice: new Decimal(0),
+    upperPrice: new Decimal(0),
     centerPrice: currentPrice,
   };
   

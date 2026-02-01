@@ -7,9 +7,6 @@ import {
   Connection,
   Keypair,
   PublicKey,
-  Transaction,
-  sendAndConfirmTransaction,
-  TransactionInstruction,
 } from '@solana/web3.js';
 import {
   WhirlpoolContext,
@@ -17,12 +14,10 @@ import {
   buildWhirlpoolClient,
   PDAUtil,
   PriceMath,
-  TickUtil,
   increaseLiquidityQuoteByInputTokenWithParams,
   decreaseLiquidityQuoteByLiquidityWithParams,
-  WhirlpoolIx,
-  toTx,
   IGNORE_CACHE,
+  Percentage,
 } from '@orca-so/whirlpools-sdk';
 import { Wallet } from '@coral-xyz/anchor';
 import { readFileSync } from 'fs';
@@ -208,28 +203,53 @@ export async function findPositions(
   const positions: PositionInfo[] = [];
   
   try {
-    // Get all position accounts owned by wallet
-    const positionAccounts = await ctx.fetcher.listPositions(
-      [walletAddress],
-      IGNORE_CACHE
+    // Get all position token accounts owned by wallet
+    const tokenAccounts = await ctx.connection.getParsedTokenAccountsByOwner(
+      walletAddress,
+      { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
     );
     
-    for (const [address, data] of positionAccounts) {
-      if (data && data.whirlpool.equals(whirlpoolPubkey)) {
-        positions.push({
-          address: new PublicKey(address),
-          whirlpool: data.whirlpool,
-          tickLowerIndex: data.tickLowerIndex,
-          tickUpperIndex: data.tickUpperIndex,
-          liquidity: data.liquidity,
-          feeOwedA: data.feeOwedA,
-          feeOwedB: data.feeOwedB,
-          rewardOwed: [data.rewardInfos[0]?.amountOwed || BigInt(0), data.rewardInfos[1]?.amountOwed || BigInt(0), data.rewardInfos[2]?.amountOwed || BigInt(0)],
-        });
+    // Filter for position NFTs (amount = 1, decimals = 0)
+    for (const { account } of tokenAccounts.value) {
+      const tokenInfo = account.data.parsed?.info;
+      if (!tokenInfo) continue;
+      
+      const amount = tokenInfo.tokenAmount?.uiAmount;
+      const decimals = tokenInfo.tokenAmount?.decimals;
+      
+      if (amount === 1 && decimals === 0) {
+        const mint = new PublicKey(tokenInfo.mint);
+        
+        // Derive position PDA from mint
+        const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, mint);
+        
+        try {
+          const position = await client.getPosition(positionPda.publicKey, IGNORE_CACHE);
+          const data = position.getData();
+          
+          if (data.whirlpool.equals(whirlpoolPubkey)) {
+            positions.push({
+              address: positionPda.publicKey,
+              whirlpool: data.whirlpool,
+              tickLowerIndex: data.tickLowerIndex,
+              tickUpperIndex: data.tickUpperIndex,
+              liquidity: data.liquidity,
+              feeOwedA: data.feeOwedA,
+              feeOwedB: data.feeOwedB,
+              rewardOwed: [
+                data.rewardInfos[0]?.amountOwed || BigInt(0),
+                data.rewardInfos[1]?.amountOwed || BigInt(0),
+                data.rewardInfos[2]?.amountOwed || BigInt(0),
+              ],
+            });
+          }
+        } catch {
+          // Not a whirlpool position NFT, skip
+        }
       }
     }
   } catch (error) {
-    logger.warn('Could not list positions, trying alternative method', error);
+    logger.warn('Could not list positions', error);
   }
   
   logger.info(`Found ${positions.length} position(s) in Whirlpool`);
@@ -254,18 +274,18 @@ export function calculateEdgeDistance(
   currentTick: number,
   lowerTick: number,
   upperTick: number
-): { lowerDistance: number; upperDistance: number; nearestEdge: 'lower' | 'upper' } {
+): { lower: number; upper: number; nearestEdge: 'lower' | 'upper' } {
   const rangeWidth = upperTick - lowerTick;
   const distanceToLower = currentTick - lowerTick;
   const distanceToUpper = upperTick - currentTick;
   
-  const lowerDistance = distanceToLower / rangeWidth;
-  const upperDistance = distanceToUpper / rangeWidth;
+  const lower = distanceToLower / rangeWidth;
+  const upper = distanceToUpper / rangeWidth;
   
   return {
-    lowerDistance,
-    upperDistance,
-    nearestEdge: lowerDistance < upperDistance ? 'lower' : 'upper',
+    lower,
+    upper,
+    nearestEdge: lower < upper ? 'lower' : 'upper',
   };
 }
 
@@ -282,7 +302,6 @@ export async function collectFeesAndRewards(
   
   const position = await client.getPosition(positionAddress, IGNORE_CACHE);
   const positionData = position.getData();
-  const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
   
   // Build collect fees transaction
   const collectTx = await position.collectFees(true); // true = collect rewards too
@@ -330,13 +349,15 @@ export async function closePosition(
     const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
     const whirlpoolData = whirlpool.getData();
     
+    const slippage = Percentage.fromFraction(1, 100); // 1%
+    
     const quote = decreaseLiquidityQuoteByLiquidityWithParams({
       sqrtPrice: whirlpoolData.sqrtPrice,
       tickCurrentIndex: whirlpoolData.tickCurrentIndex,
       tickLowerIndex: positionData.tickLowerIndex,
       tickUpperIndex: positionData.tickUpperIndex,
       liquidity: positionData.liquidity,
-      slippageTolerance: { numerator: BigInt(100), denominator: BigInt(10000) }, // 1%
+      slippageTolerance: slippage,
     });
     
     if (dryRun) {
@@ -359,10 +380,14 @@ export async function closePosition(
     return true;
   }
   
-  // Close position
-  const closeTx = await position.close();
-  const signature = await closeTx.buildAndExecute();
-  logger.info(`Position closed. Tx: ${signature}`);
+  // Close position by collecting remaining tokens and burning NFT
+  try {
+    const closeTx = await position.collectFees(true);
+    const signature = await closeTx.buildAndExecute();
+    logger.info(`Position closed. Tx: ${signature}`);
+  } catch (error) {
+    logger.warn('Could not collect remaining fees during close', error);
+  }
   
   return true;
 }
@@ -394,7 +419,8 @@ export async function openPosition(
   try {
     const { positionMint, tx } = await whirlpool.openPosition(
       lowerTick,
-      upperTick
+      upperTick,
+      Percentage.fromFraction(1, 100) // 1% slippage
     );
     
     const signature = await tx.buildAndExecute();
@@ -431,16 +457,11 @@ export async function depositLiquidity(
   const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
   const whirlpoolData = whirlpool.getData();
   
-  // Get token decimals
-  const tokenInfoA = await ctx.fetcher.getMintInfo(whirlpoolData.tokenMintA);
-  const tokenInfoB = await ctx.fetcher.getMintInfo(whirlpoolData.tokenMintB);
-  const decimalsA = tokenInfoA?.decimals || 9;
-  const decimalsB = tokenInfoB?.decimals || 6;
-  
-  // Calculate quote based on input token amounts
   // Use the larger amount as primary input
   const inputTokenA = tokenAAmount > BigInt(0);
   const inputAmount = inputTokenA ? tokenAAmount : tokenBAmount;
+  
+  const slippage = Percentage.fromFraction(1, 100); // 1%
   
   const quote = increaseLiquidityQuoteByInputTokenWithParams({
     tokenMintA: whirlpoolData.tokenMintA,
@@ -451,7 +472,7 @@ export async function depositLiquidity(
     tickUpperIndex: positionData.tickUpperIndex,
     inputTokenMint: inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
     inputTokenAmount: inputAmount,
-    slippageTolerance: { numerator: BigInt(100), denominator: BigInt(10000) }, // 1%
+    slippageTolerance: slippage,
   });
   
   if (dryRun) {
