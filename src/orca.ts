@@ -102,7 +102,9 @@ export async function createOrcaClient(config: Config): Promise<{
   const ctx = WhirlpoolContext.from(
     connection,
     wallet as any,
-    ORCA_WHIRLPOOL_PROGRAM_ID
+    ORCA_WHIRLPOOL_PROGRAM_ID,
+    undefined, // fetcher
+    IGNORE_CACHE
   );
   
   const client = buildWhirlpoolClient(ctx);
@@ -219,10 +221,10 @@ export async function findPositions(
   
   try {
     // Get all positions for the owner
-    const allPositions = await getAllPositionAccountsByOwner(ctx as any, walletAddress);
+    const allPositions = await getAllPositionAccountsByOwner(ctx);
     
-    // Filter for positions in this whirlpool - iterate over the Map
-    (allPositions as any).forEach((posData: any, address: string) => {
+    // Filter for positions in this whirlpool - iterate over the Map entries
+    for (const [address, posData] of (allPositions as any).entries()) {
       if (posData.whirlpool.equals(whirlpoolPubkey)) {
         // Get the position address
         const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, posData.positionMint);
