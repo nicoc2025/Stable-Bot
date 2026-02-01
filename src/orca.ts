@@ -94,7 +94,7 @@ export async function createOrcaClient(config: Config): Promise<{
 }> {
   const connection = new Connection(config.rpcUrl!, 'confirmed');
   const keypair = loadKeypair(config.walletKeypairPath);
-  const wallet = new Wallet(keypair);
+  const wallet = new Wallet(keypair as any);
   
   logger.info(`Connected to ${config.cluster} via ${config.rpcUrl}`);
   logger.info(`Wallet: ${wallet.publicKey.toBase58()}`);
@@ -219,10 +219,10 @@ export async function findPositions(
   
   try {
     // Get all positions for the owner
-    const allPositions = await getAllPositionAccountsByOwner(ctx, walletAddress);
+    const allPositions = await getAllPositionAccountsByOwner(ctx as any, walletAddress);
     
     // Filter for positions in this whirlpool - iterate over the Map
-    allPositions.forEach((posData: any, address: string) => {
+    (allPositions as any).forEach((posData: any, address: string) => {
       if (posData.whirlpool.equals(whirlpoolPubkey)) {
         // Get the position address
         const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, posData.positionMint);
@@ -422,7 +422,7 @@ export async function openPosition(
     const { positionMint, tx } = await whirlpool.openPosition(
       lowerTick,
       upperTick,
-      Percentage.fromFraction(1, 100)
+      Percentage.fromFraction(1, 100) as any
     );
     
     const signature = await tx.buildAndExecute();
