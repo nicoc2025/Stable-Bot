@@ -101,10 +101,7 @@ export async function createOrcaClient(config: Config): Promise<{
   
   const ctx = WhirlpoolContext.from(
     connection,
-    wallet as any,
-    ORCA_WHIRLPOOL_PROGRAM_ID,
-    undefined, // fetcher
-    IGNORE_CACHE
+    wallet as any
   );
   
   const client = buildWhirlpoolClient(ctx);
