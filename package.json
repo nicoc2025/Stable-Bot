@@ -23,7 +23,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@coral-xyz/anchor": "0.29.0",
+    "@coral-xyz/anchor": "0.32.1",
     "@orca-so/common-sdk": "0.6.4",
     "@orca-so/whirlpools-sdk": "^0.18.0",
     "@solana/spl-token": "0.4.0",
