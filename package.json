@@ -25,7 +25,7 @@
   "dependencies": {
     "@coral-xyz/anchor": "0.29.0",
     "@orca-so/common-sdk": "0.6.4",
-    "@orca-so/whirlpools-sdk": "0.13.11",
+    "@orca-so/whirlpools-sdk": "^0.18.0",
     "@solana/spl-token": "0.4.0",
     "@solana/web3.js": "1.95.0",
     "bcrypt": "5.1.1",
