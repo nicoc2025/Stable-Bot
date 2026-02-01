@@ -4,10 +4,10 @@
  */
 
 import { PublicKey } from '@solana/web3.js';
-import Decimal from 'decimal.js';
+import DecimalJS from 'decimal.js';
 import { getLogger } from './logger.js';
 import {
-  createOrcaClient,
+  createOrcaConnection,
   getWhirlpoolInfo,
   getCurrentPrice,
   calculateTickRange,
@@ -16,6 +16,7 @@ import {
   openPosition,
   depositLiquidity,
   getTokenBalances,
+  getTokenDecimals,
   type PositionInfo,
   type WhirlpoolInfo,
   type PriceRange,
@@ -25,6 +26,9 @@ import type { StrategyState } from './strategy.js';
 import { markRebalanceComplete } from './strategy.js';
 
 const logger = getLogger('Rebalance');
+
+// Use default Decimal export
+const Decimal = DecimalJS.default || DecimalJS;
 
 export interface RebalanceResult {
   success: boolean;
@@ -62,7 +66,7 @@ export async function executeRebalance(
   decimalsA: number,
   decimalsB: number
 ): Promise<{ result: RebalanceResult; newState: StrategyState }> {
-  const { ctx, client, wallet, connection } = await createOrcaClient(config);
+  const { rpc, connection, keypair, signer } = await createOrcaConnection(config);
   const transactions: string[] = [];
   
   logger.info('Starting rebalance operation...');
@@ -70,7 +74,7 @@ export async function executeRebalance(
   const result: RebalanceResult = {
     success: false,
     oldPosition: {
-      address: currentPosition.address.toBase58(),
+      address: currentPosition.address,
       tickLower: currentPosition.tickLowerIndex,
       tickUpper: currentPosition.tickUpperIndex,
     },
@@ -81,8 +85,9 @@ export async function executeRebalance(
     // Step 1: Collect fees and rewards
     logger.info('Step 1/5: Collecting fees and rewards...');
     const fees = await collectFeesAndRewards(
-      ctx,
-      client,
+      rpc,
+      connection,
+      signer,
       currentPosition.address,
       config.dryRun
     );
@@ -98,8 +103,9 @@ export async function executeRebalance(
     logger.info('Step 2/5: Removing liquidity from old position...');
     logger.info('Step 3/5: Closing old position...');
     const closed = await closePosition(
-      ctx,
-      client,
+      rpc,
+      connection,
+      signer,
       currentPosition.address,
       config.dryRun
     );
@@ -127,22 +133,23 @@ export async function executeRebalance(
       upperTick: newRange.upperTick,
     });
     
-    const newPositionAddress = await openPosition(
-      ctx,
-      client,
+    const newPositionMint = await openPosition(
+      rpc,
+      connection,
+      signer,
       config.whirlpoolAddress,
       newRange.lowerTick,
       newRange.upperTick,
       config.dryRun
     );
     
-    if (!newPositionAddress && !config.dryRun) {
+    if (!newPositionMint && !config.dryRun) {
       throw new Error('Failed to open new position');
     }
     
-    if (newPositionAddress || config.dryRun) {
+    if (newPositionMint || config.dryRun) {
       result.newPosition = {
-        address: newPositionAddress?.toBase58() || '[DRY RUN]',
+        address: newPositionMint || '[DRY RUN]',
         tickLower: newRange.lowerTick,
         tickUpper: newRange.upperTick,
       };
@@ -152,7 +159,7 @@ export async function executeRebalance(
     logger.info('Step 5/5: Depositing liquidity...');
     const balances = await getTokenBalances(
       connection,
-      wallet.publicKey,
+      keypair.publicKey,
       whirlpoolInfo.tokenMintA,
       whirlpoolInfo.tokenMintB
     );
@@ -162,11 +169,12 @@ export async function executeRebalance(
       tokenB: balances.balanceB.toString(),
     });
     
-    if ((balances.balanceA > BigInt(0) || balances.balanceB > BigInt(0)) && newPositionAddress) {
+    if ((balances.balanceA > BigInt(0) || balances.balanceB > BigInt(0)) && newPositionMint) {
       const deposited = await depositLiquidity(
-        ctx,
-        client,
-        newPositionAddress,
+        rpc,
+        connection,
+        signer,
+        newPositionMint,
         balances.balanceA,
         balances.balanceB,
         config.dryRun

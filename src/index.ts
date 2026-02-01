@@ -7,18 +7,16 @@
 import { Command } from 'commander';
 import { Keypair } from '@solana/web3.js';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { dirname } from 'path';
 import { getLogger, type LogLevel } from './logger.js';
 import { loadConfig, validateConfig, printConfig, type Config } from './config.js';
 import { hasCredentials, setupCredentials, authenticate, generatePasswordHash } from './auth.js';
 import {
-  createOrcaClient,
+  createOrcaConnection,
   getWhirlpoolInfo,
   getCurrentPrice,
   findPositions,
-  loadKeypair,
-  type PositionInfo,
-  type WhirlpoolInfo,
+  getTokenDecimals,
 } from './orca.js';
 import {
   createStrategyState,
@@ -141,7 +139,7 @@ async function runDaemon(): Promise<void> {
   logger.info(`Poll interval: ${config.pollIntervalSeconds}s`);
   logger.info(`Dry run: ${config.dryRun}`);
   
-  const { ctx, client, wallet, connection } = await createOrcaClient(config);
+  const { rpc, connection, keypair } = await createOrcaConnection(config);
   
   let state = createStrategyState();
   let decimalsA = 9; // Will be updated
@@ -149,11 +147,9 @@ async function runDaemon(): Promise<void> {
   
   // Get token decimals once
   try {
-    const whirlpoolInfo = await getWhirlpoolInfo(client, config.whirlpoolAddress);
-    const tokenInfoA = await ctx.fetcher.getMintInfo(whirlpoolInfo.tokenMintA);
-    const tokenInfoB = await ctx.fetcher.getMintInfo(whirlpoolInfo.tokenMintB);
-    decimalsA = tokenInfoA?.decimals || 9;
-    decimalsB = tokenInfoB?.decimals || 6;
+    const whirlpoolInfo = await getWhirlpoolInfo(rpc, config.whirlpoolAddress);
+    decimalsA = await getTokenDecimals(connection, whirlpoolInfo.tokenMintA);
+    decimalsB = await getTokenDecimals(connection, whirlpoolInfo.tokenMintB);
     logger.debug(`Token decimals: A=${decimalsA}, B=${decimalsB}`);
   } catch (error) {
     logger.warn('Could not fetch token decimals, using defaults', error);
@@ -172,8 +168,8 @@ async function runDaemon(): Promise<void> {
   while (true) {
     try {
       // Fetch current state
-      const whirlpoolInfo = await getWhirlpoolInfo(client, config.whirlpoolAddress);
-      const positions = await findPositions(ctx, client, config.whirlpoolAddress, wallet.publicKey);
+      const whirlpoolInfo = await getWhirlpoolInfo(rpc, config.whirlpoolAddress);
+      const positions = await findPositions(rpc, config.whirlpoolAddress, keypair.publicKey.toBase58());
       
       if (positions.length === 0) {
         logger.warn('No position found in Whirlpool. Waiting for position...');
@@ -239,17 +235,15 @@ async function runOnce(): Promise<void> {
   
   logger.info('Running single evaluation...');
   
-  const { ctx, client, wallet, connection } = await createOrcaClient(config);
+  const { rpc, connection, keypair } = await createOrcaConnection(config);
   
   // Get token decimals
-  const whirlpoolInfo = await getWhirlpoolInfo(client, config.whirlpoolAddress);
-  const tokenInfoA = await ctx.fetcher.getMintInfo(whirlpoolInfo.tokenMintA);
-  const tokenInfoB = await ctx.fetcher.getMintInfo(whirlpoolInfo.tokenMintB);
-  const decimalsA = tokenInfoA?.decimals || 9;
-  const decimalsB = tokenInfoB?.decimals || 6;
+  const whirlpoolInfo = await getWhirlpoolInfo(rpc, config.whirlpoolAddress);
+  const decimalsA = await getTokenDecimals(connection, whirlpoolInfo.tokenMintA);
+  const decimalsB = await getTokenDecimals(connection, whirlpoolInfo.tokenMintB);
   
   // Find positions
-  const positions = await findPositions(ctx, client, config.whirlpoolAddress, wallet.publicKey);
+  const positions = await findPositions(rpc, config.whirlpoolAddress, keypair.publicKey.toBase58());
   
   if (positions.length === 0) {
     console.log('\n⚠️  No position found in specified Whirlpool.\n');
@@ -308,16 +302,14 @@ async function runOnce(): Promise<void> {
 async function printStatus(): Promise<void> {
   const config = await initialize();
   
-  const { ctx, client, wallet } = await createOrcaClient(config);
+  const { rpc, connection, keypair } = await createOrcaConnection(config);
   
   // Fetch data
-  const whirlpoolInfo = await getWhirlpoolInfo(client, config.whirlpoolAddress);
-  const tokenInfoA = await ctx.fetcher.getMintInfo(whirlpoolInfo.tokenMintA);
-  const tokenInfoB = await ctx.fetcher.getMintInfo(whirlpoolInfo.tokenMintB);
-  const decimalsA = tokenInfoA?.decimals || 9;
-  const decimalsB = tokenInfoB?.decimals || 6;
+  const whirlpoolInfo = await getWhirlpoolInfo(rpc, config.whirlpoolAddress);
+  const decimalsA = await getTokenDecimals(connection, whirlpoolInfo.tokenMintA);
+  const decimalsB = await getTokenDecimals(connection, whirlpoolInfo.tokenMintB);
   
-  const positions = await findPositions(ctx, client, config.whirlpoolAddress, wallet.publicKey);
+  const positions = await findPositions(rpc, config.whirlpoolAddress, keypair.publicKey.toBase58());
   const position = positions.length > 0 ? positions[0] : null;
   
   console.log(formatPositionStatus(whirlpoolInfo, position, decimalsA, decimalsB));

@@ -3,12 +3,15 @@
  * Implements trigger logic with dwell time and anti-thrashing
  */
 
-import Decimal from 'decimal.js';
+import DecimalJS from 'decimal.js';
 import { getLogger } from './logger.js';
 import type { WhirlpoolInfo, PositionInfo, PriceRange } from './orca.js';
 import { isPriceInRange, calculateEdgeDistance, tickToPrice } from './orca.js';
 
 const logger = getLogger('Strategy');
+
+// Use default Decimal export
+const Decimal = DecimalJS.default || DecimalJS;
 
 export type TriggerReason = 
   | 'out_of_range'
@@ -44,11 +47,11 @@ export interface TriggerResult {
   reason: TriggerReason;
   details: {
     currentTick: number;
-    currentPrice: Decimal;
+    currentPrice: DecimalJS;
     lowerTick: number;
     upperTick: number;
-    lowerPrice: Decimal;
-    upperPrice: Decimal;
+    lowerPrice: DecimalJS;
+    upperPrice: DecimalJS;
     edgeDistance?: { lower: number; upper: number };
     dwellElapsed?: number;
     timeSinceLastRebalance?: number;
@@ -288,7 +291,7 @@ export function formatPositionStatus(
     '═══════════════════════════════════════════════════════════',
     '                    POSITION STATUS',
     '═══════════════════════════════════════════════════════════',
-    `  Whirlpool: ${whirlpoolInfo.address.toBase58()}`,
+    `  Whirlpool: ${whirlpoolInfo.address}`,
     `  Current Tick: ${whirlpoolInfo.currentTickIndex}`,
     `  Current Price: ${currentPrice.toFixed(6)}`,
     `  Pool Liquidity: ${whirlpoolInfo.liquidity.toString()}`,
@@ -306,7 +309,7 @@ export function formatPositionStatus(
     
     lines.push(
       '  ACTIVE POSITION:',
-      `  Address: ${position.address.toBase58()}`,
+      `  Address: ${position.address}`,
       `  Tick Range: [${position.tickLowerIndex}, ${position.tickUpperIndex}]`,
       `  Price Range: [${lowerPrice.toFixed(6)}, ${upperPrice.toFixed(6)}]`,
       `  Liquidity: ${position.liquidity.toString()}`,
