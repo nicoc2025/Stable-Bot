@@ -8,10 +8,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node --esm src/index.ts",
-    "daemon": "node dist/index.js --daemon",
-    "once": "node dist/index.js --once",
-    "status": "node dist/index.js --status",
-    "gen-keypair": "node dist/index.js --gen-keypair"
+    "daemon": "node dist/index.js daemon",
+    "once": "node dist/index.js once",
+    "status": "node dist/index.js status",
+    "gen-keypair": "node dist/index.js gen-keypair"
   },
   "keywords": [
     "solana",
@@ -25,10 +25,11 @@
   "dependencies": {
     "@orca-so/common-sdk": "^0.7.0",
     "@orca-so/whirlpools": "^6.0.0",
-    "@solana/kit": "2",
+    "@solana/kit": "^2.3.0",
     "@solana/spl-token": "^0.4.0",
     "@solana/web3.js": "^1.95.0",
     "bcrypt": "^5.1.1",
+    "bn.js": "^5.2.1",
     "commander": "^12.1.0",
     "decimal.js": "^10.4.3",
     "dotenv": "^16.4.5",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
+    "@types/bn.js": "^5.1.5",
     "@types/node": "^22.0.0",
     "@types/readline-sync": "^1.4.8",
     "ts-node": "^10.9.2",
