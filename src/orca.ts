@@ -221,7 +221,10 @@ export async function findPositions(
   
   try {
     // Get all positions for the owner
-    const allPositions = await getAllPositionAccountsByOwner(ctx);
+    const allPositions = await getAllPositionAccountsByOwner({
+      ctx,
+      owner: walletAddress,
+    });
     
     // Filter for positions in this whirlpool - iterate over the Map entries
     for (const [address, posData] of (allPositions as any).entries()) {
