@@ -4,6 +4,7 @@
  */
 
 import Decimal from 'decimal.js';
+import BN from 'bn.js';
 import { getLogger } from './logger.js';
 import {
   createOrcaClient,
@@ -160,7 +161,7 @@ export async function executeRebalance(
       tokenB: balances.balanceB.toString(),
     });
     
-    if ((balances.balanceA > BigInt(0) || balances.balanceB > BigInt(0)) && newPositionAddress) {
+    if ((!balances.balanceA.isZero() || !balances.balanceB.isZero()) && newPositionAddress) {
       const deposited = await depositLiquidity(
         ctx,
         client,
