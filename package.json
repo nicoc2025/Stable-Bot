@@ -24,17 +24,17 @@
   "license": "MIT",
   "dependencies": {
     "@coral-xyz/anchor": "0.29.0",
-    "@orca-so/common-sdk": "0.6.0",
+    "@orca-so/common-sdk": "0.6.4",
     "@orca-so/whirlpools-sdk": "0.13.11",
-    "@solana/spl-token": "^0.4.0",
-    "@solana/web3.js": "^1.95.0",
-    "bcrypt": "^5.1.1",
-    "bn.js": "^5.2.1",
-    "commander": "^12.1.0",
-    "decimal.js": "^10.4.3",
-    "dotenv": "^16.4.5",
-    "readline-sync": "^1.4.10",
-    "zod": "^3.23.8"
+    "@solana/spl-token": "0.4.0",
+    "@solana/web3.js": "1.95.0",
+    "bcrypt": "5.1.1",
+    "bn.js": "5.2.1",
+    "commander": "12.1.0",
+    "decimal.js": "10.4.3",
+    "dotenv": "16.4.5",
+    "readline-sync": "1.4.10",
+    "zod": "3.23.8"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",
