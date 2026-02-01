@@ -94,7 +94,6 @@ class OrcaLPTester {
       }
       
       // Check file content is valid JSON array
-      import { readFileSync } from 'fs';
       const keypairContent = JSON.parse(readFileSync(testKeypairPath, 'utf8'));
       if (!Array.isArray(keypairContent) || keypairContent.length !== 64) {
         throw new Error('Invalid keypair format - should be array of 64 bytes');
