@@ -4,6 +4,7 @@
  */
 
 import Decimal from 'decimal.js';
+import BN from 'bn.js';
 import { getLogger } from './logger.js';
 import type { WhirlpoolInfo, PositionInfo, PriceRange } from './orca.js';
 import { isPriceInRange, calculateEdgeDistance, tickToPrice } from './orca.js';
