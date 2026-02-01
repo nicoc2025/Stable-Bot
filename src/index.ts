@@ -195,7 +195,7 @@ async function runDaemon(): Promise<void> {
         logger.info(`Rebalance triggered: ${evaluation.reason}`);
         
         // Show preview
-        printRebalancePreview(position, whirlpoolInfo, config, decimalsA, decimalsB);
+        await printRebalancePreview(position, whirlpoolInfo, config, decimalsA, decimalsB);
         
         // Execute rebalance
         const { result, newState } = await executeRebalance(
@@ -286,7 +286,7 @@ async function runOnce(): Promise<void> {
   console.log('═══════════════════════════════════════════════════════════\n');
   
   if (evaluation.shouldRebalance) {
-    printRebalancePreview(position, whirlpoolInfo, config, decimalsA, decimalsB);
+    await printRebalancePreview(position, whirlpoolInfo, config, decimalsA, decimalsB);
     
     if (!config.dryRun) {
       console.log('⚠️  Rebalance would execute in LIVE mode. Currently in DRY_RUN=false.');

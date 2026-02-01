@@ -3,7 +3,6 @@
  * Implements trigger logic with dwell time and anti-thrashing
  */
 
-import Decimal from 'decimal.js';
 import BN from 'bn.js';
 import { getLogger } from './logger.js';
 import type { WhirlpoolInfo, PositionInfo, PriceRange } from './orca.js';
@@ -45,11 +44,11 @@ export interface TriggerResult {
   reason: TriggerReason;
   details: {
     currentTick: number;
-    currentPrice: Decimal;
+    currentPrice: any;
     lowerTick: number;
     upperTick: number;
-    lowerPrice: Decimal;
-    upperPrice: Decimal;
+    lowerPrice: any;
+    upperPrice: any;
     edgeDistance?: { lower: number; upper: number };
     dwellElapsed?: number;
     timeSinceLastRebalance?: number;

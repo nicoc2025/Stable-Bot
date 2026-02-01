@@ -3,7 +3,6 @@
  * Handles full LP position migration: withdraw → open new → redeposit
  */
 
-import Decimal from 'decimal.js';
 import BN from 'bn.js';
 import { getLogger } from './logger.js';
 import {
@@ -110,7 +109,7 @@ export async function executeRebalance(
     // Step 4: Calculate new range and open position
     logger.info('Step 4/5: Opening new position...');
     const currentPrice = getCurrentPrice(whirlpoolInfo, decimalsA, decimalsB);
-    const newRange = calculateTickRange(
+    const newRange = await calculateTickRange(
       currentPrice,
       config.rangeWidthPercent,
       whirlpoolInfo.tickSpacing,
@@ -203,29 +202,29 @@ export async function executeRebalance(
 /**
  * Simulate rebalance without executing (for dry run mode)
  */
-export function simulateRebalance(
+export async function simulateRebalance(
   currentPosition: PositionInfo,
   whirlpoolInfo: WhirlpoolInfo,
   rangeWidthPercent: number,
   decimalsA: number,
   decimalsB: number
-): {
+): Promise<{
   currentRange: PriceRange;
   newRange: PriceRange;
-} {
+}> {
   const currentPrice = getCurrentPrice(whirlpoolInfo, decimalsA, decimalsB);
   
-  // Current position range
+  // Current position range (with zero prices - we don't need them here)
   const currentRange: PriceRange = {
     lowerTick: currentPosition.tickLowerIndex,
     upperTick: currentPosition.tickUpperIndex,
-    lowerPrice: new Decimal(0),
-    upperPrice: new Decimal(0),
+    lowerPrice: 0 as any,
+    upperPrice: 0 as any,
     centerPrice: currentPrice,
   };
   
   // Calculate new range
-  const newRange = calculateTickRange(
+  const newRange = await calculateTickRange(
     currentPrice,
     rangeWidthPercent,
     whirlpoolInfo.tickSpacing,
@@ -239,14 +238,14 @@ export function simulateRebalance(
 /**
  * Print rebalance preview
  */
-export function printRebalancePreview(
+export async function printRebalancePreview(
   currentPosition: PositionInfo,
   whirlpoolInfo: WhirlpoolInfo,
   config: Config,
   decimalsA: number,
   decimalsB: number
-): void {
-  const { currentRange, newRange } = simulateRebalance(
+): Promise<void> {
+  const { currentRange, newRange } = await simulateRebalance(
     currentPosition,
     whirlpoolInfo,
     config.rangeWidthPercent,
