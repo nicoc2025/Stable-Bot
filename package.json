@@ -23,8 +23,9 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@coral-xyz/anchor": "^0.29.0",
-    "@orca-so/whirlpools-sdk": "^0.13.0",
+    "@orca-so/common-sdk": "^0.7.0",
+    "@orca-so/whirlpools": "^6.0.0",
+    "@solana/kit": "2",
     "@solana/spl-token": "^0.4.0",
     "@solana/web3.js": "^1.95.0",
     "bcrypt": "^5.1.1",
