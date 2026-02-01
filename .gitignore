@@ -31,9 +31,25 @@ dist/
 dist
 
 # Environment files (comprehensive coverage)
+.env
+.env.local
+.env.*.local
 
 *token.json*
 *credentials.json*
+
+# Solana keypairs - NEVER commit these!
+my-keypair.json
+test-keypair.json
+keypair.json
+*-keypair.json
+data/auth.json
+
+# Test reports
+test_reports/
+test_result.md
+backend_test.js
+test-*.js
 
 # Logs and debug files
 npm-debug.log*
