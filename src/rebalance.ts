@@ -3,11 +3,10 @@
  * Handles full LP position migration: withdraw → open new → redeposit
  */
 
-import { PublicKey } from '@solana/web3.js';
+import Decimal from 'decimal.js';
 import { getLogger } from './logger.js';
 import {
-  createOrcaConnection,
-  getWhirlpoolInfo,
+  createOrcaClient,
   getCurrentPrice,
   calculateTickRange,
   collectFeesAndRewards,
@@ -15,7 +14,6 @@ import {
   openPosition,
   depositLiquidity,
   getTokenBalances,
-  getTokenDecimals,
   type PositionInfo,
   type WhirlpoolInfo,
   type PriceRange,
@@ -62,7 +60,7 @@ export async function executeRebalance(
   decimalsA: number,
   decimalsB: number
 ): Promise<{ result: RebalanceResult; newState: StrategyState }> {
-  const { rpc, connection, keypair, signer } = await createOrcaConnection(config);
+  const { ctx, client, wallet, connection } = await createOrcaClient(config);
   const transactions: string[] = [];
   
   logger.info('Starting rebalance operation...');
@@ -70,7 +68,7 @@ export async function executeRebalance(
   const result: RebalanceResult = {
     success: false,
     oldPosition: {
-      address: currentPosition.address,
+      address: currentPosition.address.toBase58(),
       tickLower: currentPosition.tickLowerIndex,
       tickUpper: currentPosition.tickUpperIndex,
     },
@@ -81,9 +79,8 @@ export async function executeRebalance(
     // Step 1: Collect fees and rewards
     logger.info('Step 1/5: Collecting fees and rewards...');
     const fees = await collectFeesAndRewards(
-      rpc,
-      connection,
-      signer,
+      ctx,
+      client,
       currentPosition.address,
       config.dryRun
     );
@@ -99,9 +96,8 @@ export async function executeRebalance(
     logger.info('Step 2/5: Removing liquidity from old position...');
     logger.info('Step 3/5: Closing old position...');
     const closed = await closePosition(
-      rpc,
-      connection,
-      signer,
+      ctx,
+      client,
       currentPosition.address,
       config.dryRun
     );
@@ -129,25 +125,22 @@ export async function executeRebalance(
       upperTick: newRange.upperTick,
     });
     
-    const newPositionMint = await openPosition(
-      rpc,
-      connection,
-      signer,
+    const newPositionAddress = await openPosition(
+      ctx,
+      client,
       config.whirlpoolAddress,
       newRange.lowerTick,
       newRange.upperTick,
-      decimalsA,
-      decimalsB,
       config.dryRun
     );
     
-    if (!newPositionMint && !config.dryRun) {
+    if (!newPositionAddress && !config.dryRun) {
       throw new Error('Failed to open new position');
     }
     
-    if (newPositionMint || config.dryRun) {
+    if (newPositionAddress || config.dryRun) {
       result.newPosition = {
-        address: newPositionMint || '[DRY RUN]',
+        address: newPositionAddress?.toBase58() || '[DRY RUN]',
         tickLower: newRange.lowerTick,
         tickUpper: newRange.upperTick,
       };
@@ -157,7 +150,7 @@ export async function executeRebalance(
     logger.info('Step 5/5: Depositing liquidity...');
     const balances = await getTokenBalances(
       connection,
-      keypair.publicKey,
+      wallet.publicKey,
       whirlpoolInfo.tokenMintA,
       whirlpoolInfo.tokenMintB
     );
@@ -167,12 +160,11 @@ export async function executeRebalance(
       tokenB: balances.balanceB.toString(),
     });
     
-    if ((balances.balanceA > BigInt(0) || balances.balanceB > BigInt(0)) && newPositionMint) {
+    if ((balances.balanceA > BigInt(0) || balances.balanceB > BigInt(0)) && newPositionAddress) {
       const deposited = await depositLiquidity(
-        rpc,
-        connection,
-        signer,
-        newPositionMint,
+        ctx,
+        client,
+        newPositionAddress,
         balances.balanceA,
         balances.balanceB,
         config.dryRun
@@ -191,7 +183,7 @@ export async function executeRebalance(
       oldUpperTick: currentPosition.tickUpperIndex,
       newLowerTick: newRange.lowerTick,
       newUpperTick: newRange.upperTick,
-      newCenterPrice: currentPrice,
+      newCenterPrice: currentPrice.toNumber(),
       feesCollected: result.feesCollected,
       txSignatures: transactions,
     });
@@ -226,8 +218,8 @@ export function simulateRebalance(
   const currentRange: PriceRange = {
     lowerTick: currentPosition.tickLowerIndex,
     upperTick: currentPosition.tickUpperIndex,
-    lowerPrice: 0,
-    upperPrice: 0,
+    lowerPrice: new Decimal(0),
+    upperPrice: new Decimal(0),
     centerPrice: currentPrice,
   };
   

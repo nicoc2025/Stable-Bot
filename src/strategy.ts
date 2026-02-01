@@ -3,6 +3,7 @@
  * Implements trigger logic with dwell time and anti-thrashing
  */
 
+import Decimal from 'decimal.js';
 import { getLogger } from './logger.js';
 import type { WhirlpoolInfo, PositionInfo, PriceRange } from './orca.js';
 import { isPriceInRange, calculateEdgeDistance, tickToPrice } from './orca.js';
@@ -43,11 +44,11 @@ export interface TriggerResult {
   reason: TriggerReason;
   details: {
     currentTick: number;
-    currentPrice: number;
+    currentPrice: Decimal;
     lowerTick: number;
     upperTick: number;
-    lowerPrice: number;
-    upperPrice: number;
+    lowerPrice: Decimal;
+    upperPrice: Decimal;
     edgeDistance?: { lower: number; upper: number };
     dwellElapsed?: number;
     timeSinceLastRebalance?: number;
@@ -95,17 +96,21 @@ export function evaluateTrigger(
   if (!inRange) {
     // Price is completely out of range - always trigger
     triggerReason = 'out_of_range';
-    logger.outOfRange(currentPrice, lowerPrice, upperPrice);
+    logger.outOfRange(
+      currentPrice.toNumber(),
+      lowerPrice.toNumber(),
+      upperPrice.toNumber()
+    );
   } else if (params.edgeBufferPercent > 0) {
     // Check edge buffer conditions
     const edgeDistance = calculateEdgeDistance(currentTick, lowerTick, upperTick);
     
     if (edgeDistance.lower < params.edgeBufferPercent) {
       triggerReason = 'near_lower_edge';
-      logger.edgeHit('lower', currentPrice, lowerPrice);
+      logger.edgeHit('lower', currentPrice.toNumber(), lowerPrice.toNumber());
     } else if (edgeDistance.upper < params.edgeBufferPercent) {
       triggerReason = 'near_upper_edge';
-      logger.edgeHit('upper', currentPrice, upperPrice);
+      logger.edgeHit('upper', currentPrice.toNumber(), upperPrice.toNumber());
     }
   }
   
@@ -283,7 +288,7 @@ export function formatPositionStatus(
     '═══════════════════════════════════════════════════════════',
     '                    POSITION STATUS',
     '═══════════════════════════════════════════════════════════',
-    `  Whirlpool: ${whirlpoolInfo.address}`,
+    `  Whirlpool: ${whirlpoolInfo.address.toBase58()}`,
     `  Current Tick: ${whirlpoolInfo.currentTickIndex}`,
     `  Current Price: ${currentPrice.toFixed(6)}`,
     `  Pool Liquidity: ${whirlpoolInfo.liquidity.toString()}`,
@@ -301,7 +306,7 @@ export function formatPositionStatus(
     
     lines.push(
       '  ACTIVE POSITION:',
-      `  Address: ${position.address}`,
+      `  Address: ${position.address.toBase58()}`,
       `  Tick Range: [${position.tickLowerIndex}, ${position.tickUpperIndex}]`,
       `  Price Range: [${lowerPrice.toFixed(6)}, ${upperPrice.toFixed(6)}]`,
       `  Liquidity: ${position.liquidity.toString()}`,
