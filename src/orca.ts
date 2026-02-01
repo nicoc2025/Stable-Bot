@@ -1,6 +1,6 @@
 /**
  * Orca Whirlpools SDK helpers
- * Handles all interactions with Orca Whirlpools on Solana using the legacy SDK
+ * Handles all interactions with Orca Whirlpools on Solana using v0.18.0 SDK
  */
 
 import {
@@ -14,9 +14,8 @@ import {
   buildWhirlpoolClient,
   PDAUtil,
   PriceMath,
-  increaseLiquidityQuoteByInputToken,
-  decreaseLiquidityQuoteByLiquidity,
   IGNORE_CACHE,
+  getAllPositionAccountsByOwner,
 } from '@orca-so/whirlpools-sdk';
 import { Percentage } from '@orca-so/common-sdk';
 import { Wallet } from '@coral-xyz/anchor';
@@ -207,50 +206,26 @@ export async function findPositions(
   const positions: PositionInfo[] = [];
   
   try {
-    // Get all token accounts owned by wallet
-    const tokenAccounts = await ctx.connection.getParsedTokenAccountsByOwner(
-      walletAddress,
-      { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
+    // Get all positions for the owner
+    const allPositions = await getAllPositionAccountsByOwner(
+      ctx,
+      walletAddress
     );
     
-    // Filter for position NFTs (amount = 1, decimals = 0)
-    for (const { account } of tokenAccounts.value) {
-      const tokenInfo = account.data.parsed?.info;
-      if (!tokenInfo) continue;
-      
-      const amount = tokenInfo.tokenAmount?.uiAmount;
-      const decimals = tokenInfo.tokenAmount?.decimals;
-      
-      if (amount === 1 && decimals === 0) {
-        const mint = new PublicKey(tokenInfo.mint);
-        
-        // Derive position PDA from mint
-        const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, mint);
-        
-        try {
-          const position = await client.getPosition(positionPda.publicKey, IGNORE_CACHE);
-          const data = position.getData();
-          
-          if (data.whirlpool.equals(whirlpoolPubkey)) {
-            positions.push({
-              address: positionPda.publicKey,
-              positionMint: mint,
-              whirlpool: data.whirlpool,
-              tickLowerIndex: data.tickLowerIndex,
-              tickUpperIndex: data.tickUpperIndex,
-              liquidity: data.liquidity,
-              feeOwedA: data.feeOwedA,
-              feeOwedB: data.feeOwedB,
-              rewardOwed: [
-                data.rewardInfos[0]?.amountOwed || new BN(0),
-                data.rewardInfos[1]?.amountOwed || new BN(0),
-                data.rewardInfos[2]?.amountOwed || new BN(0),
-              ],
-            });
-          }
-        } catch {
-          // Not a whirlpool position NFT, skip
-        }
+    // Filter for positions in this whirlpool
+    for (const [address, accountData] of allPositions) {
+      if (accountData.whirlpool.equals(whirlpoolPubkey)) {
+        positions.push({
+          address: new PublicKey(address),
+          positionMint: accountData.positionMint,
+          whirlpool: accountData.whirlpool,
+          tickLowerIndex: accountData.tickLowerIndex,
+          tickUpperIndex: accountData.tickUpperIndex,
+          liquidity: accountData.liquidity,
+          feeOwedA: accountData.feeOwedA,
+          feeOwedB: accountData.feeOwedB,
+          rewardOwed: accountData.rewardInfos.map(r => r.amountOwed),
+        });
       }
     }
   } catch (error) {
@@ -324,8 +299,8 @@ export async function collectFeesAndRewards(
     logger.info(`Fees collected. Tx: ${sig1}`);
     
     // Collect rewards
-    const rewardsTx = await position.collectRewards();
-    for (const tx of rewardsTx) {
+    const rewardsTxs = await position.collectRewards();
+    for (const tx of rewardsTxs) {
       const sig = await tx.buildAndExecute();
       logger.info(`Rewards collected. Tx: ${sig}`);
     }
@@ -365,15 +340,21 @@ export async function closePosition(
   
   try {
     if (!positionData.liquidity.isZero()) {
-      // Remove all liquidity first
+      // Remove all liquidity first using decreaseLiquidity
       const slippage = Percentage.fromFraction(1, 100); // 1%
       
-      const quote = decreaseLiquidityQuoteByLiquidity(
-        positionData.liquidity,
-        slippage,
-        position,
-        whirlpool
-      );
+      // Get quote for removing all liquidity
+      const whirlpoolData = whirlpool.getData();
+      const { decreaseLiquidityQuoteByLiquidityWithParams } = await import('@orca-so/whirlpools-sdk');
+      const quote = decreaseLiquidityQuoteByLiquidityWithParams({
+        sqrtPrice: whirlpoolData.sqrtPrice,
+        tickCurrentIndex: whirlpoolData.tickCurrentIndex,
+        tickLowerIndex: positionData.tickLowerIndex,
+        tickUpperIndex: positionData.tickUpperIndex,
+        liquidity: positionData.liquidity,
+        slippageTolerance: slippage,
+        tokenExtensionCtx: await whirlpool.getTokenExtensionContext(),
+      });
       
       // Decrease liquidity
       const decreaseTx = await position.decreaseLiquidity(quote);
@@ -381,8 +362,8 @@ export async function closePosition(
       logger.info(`Liquidity removed. Tx: ${sig}`);
     }
     
-    // Close position by burning NFT and reclaiming rent
-    const closeTx = await position.closeBundledPosition();
+    // Close position
+    const closeTx = await position.close();
     const sig = await closeTx.buildAndExecute();
     logger.info(`Position closed. Tx: ${sig}`);
     
@@ -420,8 +401,7 @@ export async function openPosition(
   try {
     const { positionMint, tx } = await whirlpool.openPosition(
       lowerTick,
-      upperTick,
-      Percentage.fromFraction(1, 100) // slippage
+      upperTick
     );
     
     const signature = await tx.buildAndExecute();
@@ -469,14 +449,20 @@ export async function depositLiquidity(
   
   const slippage = Percentage.fromFraction(1, 100); // 1%
   
-  const quote = increaseLiquidityQuoteByInputToken(
-    inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
-    inputAmount,
-    positionData.tickLowerIndex,
-    positionData.tickUpperIndex,
-    slippage,
-    whirlpool
-  );
+  // Get quote for increasing liquidity
+  const { increaseLiquidityQuoteByInputTokenWithParams } = await import('@orca-so/whirlpools-sdk');
+  const quote = increaseLiquidityQuoteByInputTokenWithParams({
+    inputTokenMint: inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
+    inputTokenAmount: inputAmount,
+    tokenMintA: whirlpoolData.tokenMintA,
+    tokenMintB: whirlpoolData.tokenMintB,
+    tickCurrentIndex: whirlpoolData.tickCurrentIndex,
+    sqrtPrice: whirlpoolData.sqrtPrice,
+    tickLowerIndex: positionData.tickLowerIndex,
+    tickUpperIndex: positionData.tickUpperIndex,
+    slippageTolerance: slippage,
+    tokenExtensionCtx: await whirlpool.getTokenExtensionContext(),
+  });
   
   if (dryRun) {
     logger.info('[DRY RUN] Would deposit liquidity', {
