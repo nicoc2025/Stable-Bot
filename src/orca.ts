@@ -243,7 +243,7 @@ export async function findPositions(
           rewardOwed: posData.rewardInfos.map((r: any) => r.amountOwed),
         });
       }
-    });
+    }
   } catch (error) {
     logger.warn('Could not list positions', error);
   }
