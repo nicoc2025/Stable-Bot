@@ -1,6 +1,6 @@
 /**
  * Orca Whirlpools SDK helpers
- * Handles all interactions with Orca Whirlpools on Solana using the high-level SDK
+ * Handles all interactions with Orca Whirlpools on Solana using the legacy SDK
  */
 
 import {
@@ -9,36 +9,31 @@ import {
   PublicKey,
 } from '@solana/web3.js';
 import {
-  setWhirlpoolsConfig,
-  openPositionInstructions,
-  closePositionInstructions,
-  increaseLiquidityInstructions,
-  decreaseLiquidityInstructions,
-  harvestPositionInstructions,
-  fetchPositionsForOwner,
-  fetchConcentratedLiquidityPool,
-} from '@orca-so/whirlpools';
-import {
-  fetchWhirlpool,
-  fetchPosition,
-} from '@orca-so/whirlpools-client';
-import {
-  sqrtPriceToPrice,
-  priceToTickIndex,
-  tickIndexToPrice,
-  sqrtPriceToTickIndex,
-  getInitializableTickIndex,
-} from '@orca-so/whirlpools-core';
-import { createSolanaRpc, type Rpc, address, type Address, type KeyPairSigner, createKeyPairSignerFromBytes } from '@solana/kit';
+  WhirlpoolContext,
+  ORCA_WHIRLPOOL_PROGRAM_ID,
+  buildWhirlpoolClient,
+  PDAUtil,
+  PriceMath,
+  PoolUtil,
+  increaseLiquidityQuoteByInputTokenWithParams,
+  decreaseLiquidityQuoteByLiquidityWithParams,
+  IGNORE_CACHE,
+  type Whirlpool,
+  type Position,
+} from '@orca-so/whirlpools-sdk';
+import { Percentage } from '@orca-so/common-sdk';
+import { Wallet } from '@coral-xyz/anchor';
 import { readFileSync } from 'fs';
 import { getLogger } from './logger.js';
+import Decimal from 'decimal.js';
 import type { Config } from './config.js';
 
 const logger = getLogger('Orca');
 
 export interface PositionInfo {
-  address: string;
-  whirlpool: string;
+  address: PublicKey;
+  positionMint: PublicKey;
+  whirlpool: PublicKey;
   tickLowerIndex: number;
   tickUpperIndex: number;
   liquidity: bigint;
@@ -48,9 +43,9 @@ export interface PositionInfo {
 }
 
 export interface WhirlpoolInfo {
-  address: string;
-  tokenMintA: string;
-  tokenMintB: string;
+  address: PublicKey;
+  tokenMintA: PublicKey;
+  tokenMintB: PublicKey;
   tickSpacing: number;
   sqrtPrice: bigint;
   currentTickIndex: number;
@@ -59,12 +54,14 @@ export interface WhirlpoolInfo {
 }
 
 export interface PriceRange {
-  lowerPrice: number;
-  upperPrice: number;
+  lowerPrice: Decimal;
+  upperPrice: Decimal;
   lowerTick: number;
   upperTick: number;
-  centerPrice: number;
+  centerPrice: Decimal;
 }
+
+export type OrcaClient = ReturnType<typeof buildWhirlpoolClient>;
 
 /**
  * Load Solana keypair from file
@@ -80,62 +77,56 @@ export function loadKeypair(path: string): Keypair {
 }
 
 /**
- * Create Solana Kit signer from keypair
+ * Create Orca Whirlpool client
  */
-export async function createSignerFromKeypair(keypair: Keypair): Promise<KeyPairSigner> {
-  return createKeyPairSignerFromBytes(keypair.secretKey);
-}
-
-/**
- * Create Orca Whirlpool connection
- */
-export async function createOrcaConnection(config: Config): Promise<{
-  rpc: Rpc<any>;
+export async function createOrcaClient(config: Config): Promise<{
+  ctx: WhirlpoolContext;
+  client: OrcaClient;
+  wallet: Wallet;
   connection: Connection;
-  keypair: Keypair;
-  signer: KeyPairSigner;
 }> {
-  // Set Whirlpools config based on cluster
-  if (config.cluster === 'devnet') {
-    setWhirlpoolsConfig('solanaDevnet');
-  } else {
-    setWhirlpoolsConfig('solanaMainnet');
-  }
-  
   const connection = new Connection(config.rpcUrl!, 'confirmed');
-  const rpc = createSolanaRpc(config.rpcUrl!);
   const keypair = loadKeypair(config.walletKeypairPath);
-  const signer = await createSignerFromKeypair(keypair);
+  const wallet = new Wallet(keypair);
   
   logger.info(`Connected to ${config.cluster} via ${config.rpcUrl}`);
-  logger.info(`Wallet: ${keypair.publicKey.toBase58()}`);
+  logger.info(`Wallet: ${wallet.publicKey.toBase58()}`);
   
-  return { rpc, connection, keypair, signer };
+  const ctx = WhirlpoolContext.from(
+    connection,
+    wallet,
+    ORCA_WHIRLPOOL_PROGRAM_ID
+  );
+  
+  const client = buildWhirlpoolClient(ctx);
+  
+  return { ctx, client, wallet, connection };
 }
 
 /**
  * Fetch Whirlpool data
  */
 export async function getWhirlpoolInfo(
-  rpc: Rpc<any>,
+  client: OrcaClient,
   whirlpoolAddress: string
 ): Promise<WhirlpoolInfo> {
-  const whirlpoolAddr = address(whirlpoolAddress);
-  const whirlpool = await fetchWhirlpool(rpc, whirlpoolAddr);
+  const whirlpoolPubkey = new PublicKey(whirlpoolAddress);
+  const whirlpool = await client.getPool(whirlpoolPubkey, IGNORE_CACHE);
+  const data = whirlpool.getData();
   
   const info: WhirlpoolInfo = {
-    address: whirlpoolAddress,
-    tokenMintA: whirlpool.data.tokenMintA.toString(),
-    tokenMintB: whirlpool.data.tokenMintB.toString(),
-    tickSpacing: whirlpool.data.tickSpacing,
-    sqrtPrice: whirlpool.data.sqrtPrice,
-    currentTickIndex: whirlpool.data.tickCurrentIndex,
-    liquidity: whirlpool.data.liquidity,
-    feeRate: whirlpool.data.feeRate,
+    address: whirlpoolPubkey,
+    tokenMintA: data.tokenMintA,
+    tokenMintB: data.tokenMintB,
+    tickSpacing: data.tickSpacing,
+    sqrtPrice: data.sqrtPrice,
+    currentTickIndex: data.tickCurrentIndex,
+    liquidity: data.liquidity,
+    feeRate: data.feeRate,
   };
   
   logger.debug('Whirlpool info fetched', {
-    address: info.address,
+    address: info.address.toBase58(),
     currentTick: info.currentTickIndex,
     tickSpacing: info.tickSpacing,
   });
@@ -146,32 +137,43 @@ export async function getWhirlpoolInfo(
 /**
  * Get current price from Whirlpool
  */
-export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number, decimalsB: number): number {
-  return sqrtPriceToPrice(whirlpoolInfo.sqrtPrice, decimalsA, decimalsB);
+export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number, decimalsB: number): Decimal {
+  return PriceMath.sqrtPriceX64ToPrice(
+    whirlpoolInfo.sqrtPrice,
+    decimalsA,
+    decimalsB
+  );
 }
 
 /**
  * Calculate tick boundaries for a price range
  */
 export function calculateTickRange(
-  centerPrice: number,
+  centerPrice: Decimal,
   rangeWidthPercent: number,
   tickSpacing: number,
   decimalsA: number,
   decimalsB: number
 ): PriceRange {
   // Calculate lower and upper prices
-  const multiplier = 1 + rangeWidthPercent;
-  const lowerPrice = centerPrice / multiplier;
-  const upperPrice = centerPrice * multiplier;
+  const multiplier = new Decimal(1).plus(rangeWidthPercent);
+  const lowerPrice = centerPrice.div(multiplier);
+  const upperPrice = centerPrice.mul(multiplier);
   
   // Convert prices to tick indices
-  let lowerTick = priceToTickIndex(lowerPrice, decimalsA, decimalsB);
-  let upperTick = priceToTickIndex(upperPrice, decimalsA, decimalsB);
+  let lowerTick = PriceMath.priceToInitializableTickIndex(
+    lowerPrice,
+    decimalsA,
+    decimalsB,
+    tickSpacing
+  );
   
-  // Align to tick spacing
-  lowerTick = getInitializableTickIndex(lowerTick, tickSpacing, false);
-  upperTick = getInitializableTickIndex(upperTick, tickSpacing, true);
+  let upperTick = PriceMath.priceToInitializableTickIndex(
+    upperPrice,
+    decimalsA,
+    decimalsB,
+    tickSpacing
+  );
   
   // Ensure ticks are in correct order
   if (lowerTick > upperTick) {
@@ -190,43 +192,66 @@ export function calculateTickRange(
 /**
  * Get price from tick index
  */
-export function tickToPrice(tick: number, decimalsA: number, decimalsB: number): number {
-  return tickIndexToPrice(tick, decimalsA, decimalsB);
+export function tickToPrice(tick: number, decimalsA: number, decimalsB: number): Decimal {
+  return PriceMath.tickIndexToPrice(tick, decimalsA, decimalsB);
 }
 
 /**
  * Find existing positions for wallet in a Whirlpool
  */
 export async function findPositions(
-  rpc: Rpc<any>,
+  ctx: WhirlpoolContext,
+  client: OrcaClient,
   whirlpoolAddress: string,
-  walletAddress: string
+  walletAddress: PublicKey
 ): Promise<PositionInfo[]> {
+  const whirlpoolPubkey = new PublicKey(whirlpoolAddress);
   const positions: PositionInfo[] = [];
   
   try {
-    const ownerAddr = address(walletAddress);
-    const allPositions = await fetchPositionsForOwner(rpc, ownerAddr);
+    // Get all token accounts owned by wallet
+    const tokenAccounts = await ctx.connection.getParsedTokenAccountsByOwner(
+      walletAddress,
+      { programId: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') }
+    );
     
-    for (const pos of allPositions) {
-      // Check if this is a Position (not PositionBundle)
-      if ('whirlpool' in pos.data) {
-        const posData = pos.data as any;
-        if (posData.whirlpool.toString() === whirlpoolAddress) {
-          positions.push({
-            address: pos.address.toString(),
-            whirlpool: posData.whirlpool.toString(),
-            tickLowerIndex: posData.tickLowerIndex,
-            tickUpperIndex: posData.tickUpperIndex,
-            liquidity: posData.liquidity,
-            feeOwedA: posData.feeOwedA,
-            feeOwedB: posData.feeOwedB,
-            rewardOwed: [
-              posData.rewardInfos?.[0]?.amountOwed || BigInt(0),
-              posData.rewardInfos?.[1]?.amountOwed || BigInt(0),
-              posData.rewardInfos?.[2]?.amountOwed || BigInt(0),
-            ],
-          });
+    // Filter for position NFTs (amount = 1, decimals = 0)
+    for (const { account } of tokenAccounts.value) {
+      const tokenInfo = account.data.parsed?.info;
+      if (!tokenInfo) continue;
+      
+      const amount = tokenInfo.tokenAmount?.uiAmount;
+      const decimals = tokenInfo.tokenAmount?.decimals;
+      
+      if (amount === 1 && decimals === 0) {
+        const mint = new PublicKey(tokenInfo.mint);
+        
+        // Derive position PDA from mint
+        const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, mint);
+        
+        try {
+          const position = await client.getPosition(positionPda.publicKey, IGNORE_CACHE);
+          const data = position.getData();
+          
+          if (data.whirlpool.equals(whirlpoolPubkey)) {
+            positions.push({
+              address: positionPda.publicKey,
+              positionMint: mint,
+              whirlpool: data.whirlpool,
+              tickLowerIndex: data.tickLowerIndex,
+              tickUpperIndex: data.tickUpperIndex,
+              liquidity: data.liquidity,
+              feeOwedA: data.feeOwedA,
+              feeOwedB: data.feeOwedB,
+              rewardOwed: [
+                data.rewardInfos[0]?.amountOwed || BigInt(0),
+                data.rewardInfos[1]?.amountOwed || BigInt(0),
+                data.rewardInfos[2]?.amountOwed || BigInt(0),
+              ],
+            });
+          }
+        } catch {
+          // Not a whirlpool position NFT, skip
         }
       }
     }
@@ -275,43 +300,40 @@ export function calculateEdgeDistance(
  * Collect fees and rewards from a position
  */
 export async function collectFeesAndRewards(
-  rpc: Rpc<any>,
-  connection: Connection,
-  signer: KeyPairSigner,
-  positionAddress: string,
+  ctx: WhirlpoolContext,
+  client: OrcaClient,
+  positionAddress: PublicKey,
   dryRun: boolean
 ): Promise<{ feeA: bigint; feeB: bigint; rewards: bigint[] } | null> {
-  logger.info(`Collecting fees from position ${positionAddress}`);
+  logger.info(`Collecting fees from position ${positionAddress.toBase58()}`);
   
-  const posAddr = address(positionAddress);
-  const position = await fetchPosition(rpc, posAddr);
+  const position = await client.getPosition(positionAddress, IGNORE_CACHE);
+  const positionData = position.getData();
   
   if (dryRun) {
     logger.info('[DRY RUN] Would collect fees and rewards');
     return {
-      feeA: position.data.feeOwedA,
-      feeB: position.data.feeOwedB,
-      rewards: [
-        position.data.rewardInfos?.[0]?.amountOwed || BigInt(0),
-        position.data.rewardInfos?.[1]?.amountOwed || BigInt(0),
-        position.data.rewardInfos?.[2]?.amountOwed || BigInt(0),
-      ],
+      feeA: positionData.feeOwedA,
+      feeB: positionData.feeOwedB,
+      rewards: positionData.rewardInfos.map(r => r.amountOwed),
     };
   }
   
   try {
-    const { instructions } = await harvestPositionInstructions(rpc, posAddr, signer);
-    logger.info('Harvest instructions generated, sending transaction...');
-    logger.info('Fees collection initiated');
+    // Build and execute collect fees transaction
+    const collectTx = await position.collectFees();
+    const sig1 = await collectTx.buildAndExecute();
+    logger.info(`Fees collected. Tx: ${sig1}`);
+    
+    // Collect rewards if any
+    const collectRewardsTx = await position.collectRewards();
+    const sig2 = await collectRewardsTx.buildAndExecute();
+    logger.info(`Rewards collected. Tx: ${sig2}`);
     
     return {
-      feeA: position.data.feeOwedA,
-      feeB: position.data.feeOwedB,
-      rewards: [
-        position.data.rewardInfos?.[0]?.amountOwed || BigInt(0),
-        position.data.rewardInfos?.[1]?.amountOwed || BigInt(0),
-        position.data.rewardInfos?.[2]?.amountOwed || BigInt(0),
-      ],
+      feeA: positionData.feeOwedA,
+      feeB: positionData.feeOwedB,
+      rewards: positionData.rewardInfos.map(r => r.amountOwed),
     };
   } catch (error) {
     logger.error('Failed to collect fees', error);
@@ -323,31 +345,50 @@ export async function collectFeesAndRewards(
  * Close a position (remove liquidity and close account)
  */
 export async function closePosition(
-  rpc: Rpc<any>,
-  connection: Connection,
-  signer: KeyPairSigner,
-  positionMintAddress: string,
+  ctx: WhirlpoolContext,
+  client: OrcaClient,
+  positionAddress: PublicKey,
   dryRun: boolean
 ): Promise<boolean> {
-  logger.info(`Closing position with mint ${positionMintAddress}`);
+  logger.info(`Closing position ${positionAddress.toBase58()}`);
   
-  const mintAddr = address(positionMintAddress);
+  const position = await client.getPosition(positionAddress, IGNORE_CACHE);
+  const positionData = position.getData();
   
   if (dryRun) {
-    logger.info('[DRY RUN] Would remove liquidity and close position');
+    logger.info('[DRY RUN] Would remove liquidity and close position', {
+      liquidityToRemove: positionData.liquidity.toString(),
+    });
     return true;
   }
   
   try {
-    // closePositionInstructions handles decreasing liquidity and closing
-    const slippage = 100; // 1% in basis points
-    const { instructions: closeIx } = await closePositionInstructions(
-      rpc, 
-      mintAddr, 
-      slippage, 
-      signer
-    );
-    logger.info('Position close instructions generated');
+    if (positionData.liquidity > BigInt(0)) {
+      // Remove all liquidity first
+      const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
+      const whirlpoolData = whirlpool.getData();
+      
+      const slippage = Percentage.fromFraction(1, 100); // 1%
+      
+      const quote = decreaseLiquidityQuoteByLiquidityWithParams({
+        sqrtPrice: whirlpoolData.sqrtPrice,
+        tickCurrentIndex: whirlpoolData.tickCurrentIndex,
+        tickLowerIndex: positionData.tickLowerIndex,
+        tickUpperIndex: positionData.tickUpperIndex,
+        liquidity: positionData.liquidity,
+        slippageTolerance: slippage,
+      });
+      
+      // Decrease liquidity
+      const decreaseTx = await position.decreaseLiquidity(quote);
+      const sig = await decreaseTx.buildAndExecute();
+      logger.info(`Liquidity removed. Tx: ${sig}`);
+    }
+    
+    // Close position
+    const closeTx = await position.close();
+    const sig = await closeTx.buildAndExecute();
+    logger.info(`Position closed. Tx: ${sig}`);
     
     return true;
   } catch (error) {
@@ -360,49 +401,42 @@ export async function closePosition(
  * Open a new position with specified range
  */
 export async function openPosition(
-  rpc: Rpc<any>,
-  connection: Connection,
-  signer: KeyPairSigner,
+  ctx: WhirlpoolContext,
+  client: OrcaClient,
   whirlpoolAddress: string,
   lowerTick: number,
   upperTick: number,
-  decimalsA: number,
-  decimalsB: number,
   dryRun: boolean
-): Promise<string | null> {
+): Promise<PublicKey | null> {
   logger.info(`Opening new position: ticks [${lowerTick}, ${upperTick}]`);
   
-  const whirlpoolAddr = address(whirlpoolAddress);
-  
-  // Convert ticks to prices for the SDK
-  const lowerPrice = tickIndexToPrice(lowerTick, decimalsA, decimalsB);
-  const upperPrice = tickIndexToPrice(upperTick, decimalsA, decimalsB);
+  const whirlpoolPubkey = new PublicKey(whirlpoolAddress);
+  const whirlpool = await client.getPool(whirlpoolPubkey, IGNORE_CACHE);
   
   if (dryRun) {
     logger.info('[DRY RUN] Would open new position', {
       lowerTick,
       upperTick,
-      lowerPrice,
-      upperPrice,
     });
     return null;
   }
   
   try {
-    const slippage = 100; // 1% in basis points
-    const { instructions, positionMint } = await openPositionInstructions(
-      rpc,
-      whirlpoolAddr,
-      { tokenA: BigInt(0) }, // Will deposit later
-      lowerPrice,
-      upperPrice,
-      slippage,
-      signer
+    const { positionMint, tx } = await whirlpool.openPosition(
+      lowerTick,
+      upperTick
     );
     
-    logger.info(`Position open instructions generated. Mint: ${positionMint.toString()}`);
+    const signature = await tx.buildAndExecute();
+    logger.info(`Position opened. Mint: ${positionMint.toBase58()}, Tx: ${signature}`);
     
-    return positionMint.toString();
+    // Get position address from mint
+    const positionPda = PDAUtil.getPosition(
+      ORCA_WHIRLPOOL_PROGRAM_ID,
+      positionMint
+    );
+    
+    return positionPda.publicKey;
   } catch (error) {
     logger.error('Failed to open position', error);
     return null;
@@ -413,38 +447,56 @@ export async function openPosition(
  * Deposit liquidity into a position
  */
 export async function depositLiquidity(
-  rpc: Rpc<any>,
-  connection: Connection,
-  signer: KeyPairSigner,
-  positionMintAddress: string,
+  ctx: WhirlpoolContext,
+  client: OrcaClient,
+  positionAddress: PublicKey,
   tokenAAmount: bigint,
   tokenBAmount: bigint,
   dryRun: boolean
 ): Promise<boolean> {
-  logger.info(`Depositing liquidity into position with mint ${positionMintAddress}`);
+  logger.info(`Depositing liquidity into position ${positionAddress.toBase58()}`);
   
-  const mintAddr = address(positionMintAddress);
+  const position = await client.getPosition(positionAddress, IGNORE_CACHE);
+  const positionData = position.getData();
+  const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
+  const whirlpoolData = whirlpool.getData();
+  
+  // Use the larger amount as primary input
+  const inputTokenA = tokenAAmount > BigInt(0);
+  const inputAmount = inputTokenA ? tokenAAmount : tokenBAmount;
+  
+  if (inputAmount === BigInt(0)) {
+    logger.warn('No tokens to deposit');
+    return true;
+  }
+  
+  const slippage = Percentage.fromFraction(1, 100); // 1%
+  
+  const quote = increaseLiquidityQuoteByInputTokenWithParams({
+    tokenMintA: whirlpoolData.tokenMintA,
+    tokenMintB: whirlpoolData.tokenMintB,
+    sqrtPrice: whirlpoolData.sqrtPrice,
+    tickCurrentIndex: whirlpoolData.tickCurrentIndex,
+    tickLowerIndex: positionData.tickLowerIndex,
+    tickUpperIndex: positionData.tickUpperIndex,
+    inputTokenMint: inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
+    inputTokenAmount: inputAmount,
+    slippageTolerance: slippage,
+  });
   
   if (dryRun) {
     logger.info('[DRY RUN] Would deposit liquidity', {
-      tokenA: tokenAAmount.toString(),
-      tokenB: tokenBAmount.toString(),
+      estimatedLiquidity: quote.liquidityAmount.toString(),
+      tokenAMax: quote.tokenMaxA.toString(),
+      tokenBMax: quote.tokenMaxB.toString(),
     });
     return true;
   }
   
   try {
-    // Use token A amount as input
-    const slippage = 100; // 1% in basis points
-    const { instructions } = await increaseLiquidityInstructions(
-      rpc,
-      mintAddr,
-      { tokenA: tokenAAmount },
-      slippage,
-      signer
-    );
-    
-    logger.info('Liquidity increase instructions generated');
+    const increaseTx = await position.increaseLiquidity(quote);
+    const signature = await increaseTx.buildAndExecute();
+    logger.info(`Liquidity deposited. Tx: ${signature}`);
     return true;
   } catch (error) {
     logger.error('Failed to deposit liquidity', error);
@@ -458,17 +510,14 @@ export async function depositLiquidity(
 export async function getTokenBalances(
   connection: Connection,
   walletAddress: PublicKey,
-  tokenMintA: string,
-  tokenMintB: string
+  tokenMintA: PublicKey,
+  tokenMintB: PublicKey
 ): Promise<{ balanceA: bigint; balanceB: bigint }> {
   const { getAssociatedTokenAddress } = await import('@solana/spl-token');
   
   try {
-    const mintA = new PublicKey(tokenMintA);
-    const mintB = new PublicKey(tokenMintB);
-    
-    const ataA = await getAssociatedTokenAddress(mintA, walletAddress);
-    const ataB = await getAssociatedTokenAddress(mintB, walletAddress);
+    const ataA = await getAssociatedTokenAddress(tokenMintA, walletAddress);
+    const ataB = await getAssociatedTokenAddress(tokenMintB, walletAddress);
     
     const [accountA, accountB] = await Promise.all([
       connection.getTokenAccountBalance(ataA).catch(() => null),
@@ -490,11 +539,10 @@ export async function getTokenBalances(
  */
 export async function getTokenDecimals(
   connection: Connection,
-  tokenMint: string
+  tokenMint: PublicKey
 ): Promise<number> {
   try {
-    const mint = new PublicKey(tokenMint);
-    const info = await connection.getParsedAccountInfo(mint);
+    const info = await connection.getParsedAccountInfo(tokenMint);
     const data = (info.value?.data as any)?.parsed?.info;
     return data?.decimals || 9;
   } catch {
