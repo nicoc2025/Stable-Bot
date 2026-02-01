@@ -14,18 +14,16 @@ import {
   buildWhirlpoolClient,
   PDAUtil,
   PriceMath,
-  PoolUtil,
-  increaseLiquidityQuoteByInputTokenWithParams,
-  decreaseLiquidityQuoteByLiquidityWithParams,
+  increaseLiquidityQuoteByInputToken,
+  decreaseLiquidityQuoteByLiquidity,
   IGNORE_CACHE,
-  type Whirlpool,
-  type Position,
 } from '@orca-so/whirlpools-sdk';
 import { Percentage } from '@orca-so/common-sdk';
 import { Wallet } from '@coral-xyz/anchor';
 import { readFileSync } from 'fs';
 import { getLogger } from './logger.js';
 import Decimal from 'decimal.js';
+import BN from 'bn.js';
 import type { Config } from './config.js';
 
 const logger = getLogger('Orca');
@@ -36,10 +34,10 @@ export interface PositionInfo {
   whirlpool: PublicKey;
   tickLowerIndex: number;
   tickUpperIndex: number;
-  liquidity: bigint;
-  feeOwedA: bigint;
-  feeOwedB: bigint;
-  rewardOwed: bigint[];
+  liquidity: BN;
+  feeOwedA: BN;
+  feeOwedB: BN;
+  rewardOwed: BN[];
 }
 
 export interface WhirlpoolInfo {
@@ -47,9 +45,9 @@ export interface WhirlpoolInfo {
   tokenMintA: PublicKey;
   tokenMintB: PublicKey;
   tickSpacing: number;
-  sqrtPrice: bigint;
+  sqrtPrice: BN;
   currentTickIndex: number;
-  liquidity: bigint;
+  liquidity: BN;
   feeRate: number;
 }
 
@@ -244,9 +242,9 @@ export async function findPositions(
               feeOwedA: data.feeOwedA,
               feeOwedB: data.feeOwedB,
               rewardOwed: [
-                data.rewardInfos[0]?.amountOwed || BigInt(0),
-                data.rewardInfos[1]?.amountOwed || BigInt(0),
-                data.rewardInfos[2]?.amountOwed || BigInt(0),
+                data.rewardInfos[0]?.amountOwed || new BN(0),
+                data.rewardInfos[1]?.amountOwed || new BN(0),
+                data.rewardInfos[2]?.amountOwed || new BN(0),
               ],
             });
           }
@@ -304,7 +302,7 @@ export async function collectFeesAndRewards(
   client: OrcaClient,
   positionAddress: PublicKey,
   dryRun: boolean
-): Promise<{ feeA: bigint; feeB: bigint; rewards: bigint[] } | null> {
+): Promise<{ feeA: BN; feeB: BN; rewards: BN[] } | null> {
   logger.info(`Collecting fees from position ${positionAddress.toBase58()}`);
   
   const position = await client.getPosition(positionAddress, IGNORE_CACHE);
@@ -320,15 +318,17 @@ export async function collectFeesAndRewards(
   }
   
   try {
-    // Build and execute collect fees transaction
-    const collectTx = await position.collectFees();
-    const sig1 = await collectTx.buildAndExecute();
+    // Collect fees
+    const feesTx = await position.collectFees();
+    const sig1 = await feesTx.buildAndExecute();
     logger.info(`Fees collected. Tx: ${sig1}`);
     
-    // Collect rewards if any
-    const collectRewardsTx = await position.collectRewards();
-    const sig2 = await collectRewardsTx.buildAndExecute();
-    logger.info(`Rewards collected. Tx: ${sig2}`);
+    // Collect rewards
+    const rewardsTx = await position.collectRewards();
+    for (const tx of rewardsTx) {
+      const sig = await tx.buildAndExecute();
+      logger.info(`Rewards collected. Tx: ${sig}`);
+    }
     
     return {
       feeA: positionData.feeOwedA,
@@ -354,6 +354,7 @@ export async function closePosition(
   
   const position = await client.getPosition(positionAddress, IGNORE_CACHE);
   const positionData = position.getData();
+  const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
   
   if (dryRun) {
     logger.info('[DRY RUN] Would remove liquidity and close position', {
@@ -363,21 +364,16 @@ export async function closePosition(
   }
   
   try {
-    if (positionData.liquidity > BigInt(0)) {
+    if (!positionData.liquidity.isZero()) {
       // Remove all liquidity first
-      const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
-      const whirlpoolData = whirlpool.getData();
-      
       const slippage = Percentage.fromFraction(1, 100); // 1%
       
-      const quote = decreaseLiquidityQuoteByLiquidityWithParams({
-        sqrtPrice: whirlpoolData.sqrtPrice,
-        tickCurrentIndex: whirlpoolData.tickCurrentIndex,
-        tickLowerIndex: positionData.tickLowerIndex,
-        tickUpperIndex: positionData.tickUpperIndex,
-        liquidity: positionData.liquidity,
-        slippageTolerance: slippage,
-      });
+      const quote = decreaseLiquidityQuoteByLiquidity(
+        positionData.liquidity,
+        slippage,
+        position,
+        whirlpool
+      );
       
       // Decrease liquidity
       const decreaseTx = await position.decreaseLiquidity(quote);
@@ -385,8 +381,8 @@ export async function closePosition(
       logger.info(`Liquidity removed. Tx: ${sig}`);
     }
     
-    // Close position
-    const closeTx = await position.close();
+    // Close position by burning NFT and reclaiming rent
+    const closeTx = await position.closeBundledPosition();
     const sig = await closeTx.buildAndExecute();
     logger.info(`Position closed. Tx: ${sig}`);
     
@@ -424,7 +420,8 @@ export async function openPosition(
   try {
     const { positionMint, tx } = await whirlpool.openPosition(
       lowerTick,
-      upperTick
+      upperTick,
+      Percentage.fromFraction(1, 100) // slippage
     );
     
     const signature = await tx.buildAndExecute();
@@ -450,8 +447,8 @@ export async function depositLiquidity(
   ctx: WhirlpoolContext,
   client: OrcaClient,
   positionAddress: PublicKey,
-  tokenAAmount: bigint,
-  tokenBAmount: bigint,
+  tokenAAmount: BN,
+  tokenBAmount: BN,
   dryRun: boolean
 ): Promise<boolean> {
   logger.info(`Depositing liquidity into position ${positionAddress.toBase58()}`);
@@ -462,27 +459,24 @@ export async function depositLiquidity(
   const whirlpoolData = whirlpool.getData();
   
   // Use the larger amount as primary input
-  const inputTokenA = tokenAAmount > BigInt(0);
+  const inputTokenA = tokenAAmount.gt(new BN(0));
   const inputAmount = inputTokenA ? tokenAAmount : tokenBAmount;
   
-  if (inputAmount === BigInt(0)) {
+  if (inputAmount.isZero()) {
     logger.warn('No tokens to deposit');
     return true;
   }
   
   const slippage = Percentage.fromFraction(1, 100); // 1%
   
-  const quote = increaseLiquidityQuoteByInputTokenWithParams({
-    tokenMintA: whirlpoolData.tokenMintA,
-    tokenMintB: whirlpoolData.tokenMintB,
-    sqrtPrice: whirlpoolData.sqrtPrice,
-    tickCurrentIndex: whirlpoolData.tickCurrentIndex,
-    tickLowerIndex: positionData.tickLowerIndex,
-    tickUpperIndex: positionData.tickUpperIndex,
-    inputTokenMint: inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
-    inputTokenAmount: inputAmount,
-    slippageTolerance: slippage,
-  });
+  const quote = increaseLiquidityQuoteByInputToken(
+    inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
+    inputAmount,
+    positionData.tickLowerIndex,
+    positionData.tickUpperIndex,
+    slippage,
+    whirlpool
+  );
   
   if (dryRun) {
     logger.info('[DRY RUN] Would deposit liquidity', {
@@ -512,7 +506,7 @@ export async function getTokenBalances(
   walletAddress: PublicKey,
   tokenMintA: PublicKey,
   tokenMintB: PublicKey
-): Promise<{ balanceA: bigint; balanceB: bigint }> {
+): Promise<{ balanceA: BN; balanceB: BN }> {
   const { getAssociatedTokenAddress } = await import('@solana/spl-token');
   
   try {
@@ -525,12 +519,12 @@ export async function getTokenBalances(
     ]);
     
     return {
-      balanceA: BigInt(accountA?.value.amount || '0'),
-      balanceB: BigInt(accountB?.value.amount || '0'),
+      balanceA: new BN(accountA?.value.amount || '0'),
+      balanceB: new BN(accountB?.value.amount || '0'),
     };
   } catch (error) {
     logger.warn('Could not fetch token balances', error);
-    return { balanceA: BigInt(0), balanceB: BigInt(0) };
+    return { balanceA: new BN(0), balanceB: new BN(0) };
   }
 }
 
