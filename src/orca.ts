@@ -206,6 +206,7 @@ export function tickToPrice(tick: number, decimalsA: number, decimalsB: number):
 
 /**
  * Find existing positions for wallet in a Whirlpool
+ * Uses token account scanning to find position NFTs owned by the wallet
  */
 export async function findPositions(
   ctx: WhirlpoolContext,
@@ -216,36 +217,170 @@ export async function findPositions(
   const whirlpoolPubkey = new PublicKey(whirlpoolAddress);
   const positions: PositionInfo[] = [];
   
+  logger.debug(`Scanning for positions in Whirlpool: ${whirlpoolAddress}`);
+  logger.debug(`Wallet address: ${walletAddress.toBase58()}`);
+  
   try {
-    // Get all positions for the owner
-    const allPositions = await getAllPositionAccountsByOwner({
-      ctx,
-      owner: walletAddress,
-    });
-    
-    // Filter for positions in this whirlpool - iterate over the Map entries
-    for (const [address, posData] of (allPositions as any).entries()) {
-      if (posData.whirlpool.equals(whirlpoolPubkey)) {
-        // Get the position address
-        const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, posData.positionMint);
-        positions.push({
-          address: positionPda.publicKey,
-          positionMint: posData.positionMint,
-          whirlpool: posData.whirlpool,
-          tickLowerIndex: posData.tickLowerIndex,
-          tickUpperIndex: posData.tickUpperIndex,
-          liquidity: posData.liquidity,
-          feeOwedA: posData.feeOwedA,
-          feeOwedB: posData.feeOwedB,
-          rewardOwed: posData.rewardInfos.map((r: any) => r.amountOwed),
-        });
+    // Method 1: Try the SDK's getAllPositionAccountsByOwner first
+    try {
+      const allPositions = await getAllPositionAccountsByOwner({
+        ctx,
+        owner: walletAddress,
+      });
+      
+      logger.debug(`getAllPositionAccountsByOwner returned: ${typeof allPositions}`);
+      
+      // Handle different return types (Map, Array, or object)
+      if (allPositions) {
+        const entries = allPositions instanceof Map 
+          ? Array.from(allPositions.entries())
+          : Array.isArray(allPositions)
+            ? allPositions.map((p: any, i: number) => [i, p])
+            : Object.entries(allPositions);
+        
+        logger.debug(`Found ${entries.length} total positions for wallet`);
+        
+        for (const [key, posData] of entries) {
+          if (posData && posData.whirlpool) {
+            logger.debug(`Position whirlpool: ${posData.whirlpool.toBase58()}, target: ${whirlpoolPubkey.toBase58()}`);
+            if (posData.whirlpool.equals(whirlpoolPubkey)) {
+              const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, posData.positionMint);
+              positions.push({
+                address: positionPda.publicKey,
+                positionMint: posData.positionMint,
+                whirlpool: posData.whirlpool,
+                tickLowerIndex: posData.tickLowerIndex,
+                tickUpperIndex: posData.tickUpperIndex,
+                liquidity: posData.liquidity,
+                feeOwedA: posData.feeOwedA || new BN(0),
+                feeOwedB: posData.feeOwedB || new BN(0),
+                rewardOwed: posData.rewardInfos?.map((r: any) => r.amountOwed) || [],
+              });
+            }
+          }
+        }
       }
+    } catch (sdkError) {
+      logger.debug('SDK getAllPositionAccountsByOwner failed, trying alternative method', sdkError);
     }
+    
+    // Method 2: If SDK method failed or found no positions, scan token accounts
+    if (positions.length === 0) {
+      logger.debug('Using token account scanning method...');
+      const foundPositions = await scanTokenAccountsForPositions(
+        ctx.connection,
+        walletAddress,
+        whirlpoolPubkey
+      );
+      positions.push(...foundPositions);
+    }
+    
   } catch (error) {
     logger.warn('Could not list positions', error);
   }
   
   logger.info(`Found ${positions.length} position(s) in Whirlpool`);
+  return positions;
+}
+
+/**
+ * Alternative method: Scan wallet's token accounts for position NFTs
+ * Position NFTs have supply of 1 and decimals of 0
+ */
+async function scanTokenAccountsForPositions(
+  connection: Connection,
+  walletAddress: PublicKey,
+  whirlpoolPubkey: PublicKey
+): Promise<PositionInfo[]> {
+  const positions: PositionInfo[] = [];
+  const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+  
+  try {
+    // Get all token accounts owned by the wallet
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      walletAddress,
+      { programId: TOKEN_PROGRAM_ID }
+    );
+    
+    logger.debug(`Found ${tokenAccounts.value.length} token accounts for wallet`);
+    
+    // Filter for NFTs (amount = 1, decimals = 0 - typical for position NFTs)
+    const potentialNFTs = tokenAccounts.value.filter(account => {
+      const info = account.account.data.parsed.info;
+      return info.tokenAmount.decimals === 0 && 
+             info.tokenAmount.uiAmount === 1;
+    });
+    
+    logger.debug(`Found ${potentialNFTs.length} potential position NFTs`);
+    
+    // For each potential NFT, try to derive and fetch the position account
+    for (const nftAccount of potentialNFTs) {
+      const mintAddress = new PublicKey(nftAccount.account.data.parsed.info.mint);
+      
+      try {
+        // Derive position PDA from mint
+        const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, mintAddress);
+        
+        // Try to fetch position data
+        const positionAccountInfo = await connection.getAccountInfo(positionPda.publicKey);
+        
+        if (positionAccountInfo && positionAccountInfo.data) {
+          // Parse position data manually
+          // Position account layout: discriminator (8) + whirlpool (32) + positionMint (32) + liquidity (16) + ...
+          const data = positionAccountInfo.data;
+          
+          // Skip discriminator (8 bytes) and read whirlpool pubkey (32 bytes)
+          const positionWhirlpool = new PublicKey(data.slice(8, 40));
+          
+          logger.debug(`NFT ${mintAddress.toBase58().slice(0,8)}... -> Whirlpool: ${positionWhirlpool.toBase58().slice(0,8)}...`);
+          
+          if (positionWhirlpool.equals(whirlpoolPubkey)) {
+            // Parse remaining fields
+            // positionMint: bytes 40-72
+            const positionMint = new PublicKey(data.slice(40, 72));
+            
+            // liquidity: bytes 72-88 (u128 as two u64s, we'll use first 8 bytes as BN)
+            const liquidityBytes = data.slice(72, 88);
+            const liquidity = new BN(liquidityBytes, 'le');
+            
+            // tickLowerIndex: bytes 88-92 (i32)
+            const tickLowerIndex = data.readInt32LE(88);
+            
+            // tickUpperIndex: bytes 92-96 (i32)
+            const tickUpperIndex = data.readInt32LE(92);
+            
+            // feeOwedA: bytes 96-104 (u64)
+            const feeOwedA = new BN(data.slice(96, 104), 'le');
+            
+            // feeOwedB: bytes 104-112 (u64)
+            const feeOwedB = new BN(data.slice(104, 112), 'le');
+            
+            logger.info(`Found matching position: ${positionPda.publicKey.toBase58()}`);
+            logger.info(`  Tick range: [${tickLowerIndex}, ${tickUpperIndex}]`);
+            logger.info(`  Liquidity: ${liquidity.toString()}`);
+            
+            positions.push({
+              address: positionPda.publicKey,
+              positionMint: positionMint,
+              whirlpool: positionWhirlpool,
+              tickLowerIndex,
+              tickUpperIndex,
+              liquidity,
+              feeOwedA,
+              feeOwedB,
+              rewardOwed: [],
+            });
+          }
+        }
+      } catch (posError) {
+        // Not a valid position NFT, skip
+        logger.debug(`NFT ${mintAddress.toBase58().slice(0,8)}... is not a position NFT`);
+      }
+    }
+  } catch (error) {
+    logger.error('Token account scanning failed', error);
+  }
+  
   return positions;
 }
 
