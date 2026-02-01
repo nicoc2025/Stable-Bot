@@ -136,6 +136,8 @@ export async function executeRebalance(
       config.whirlpoolAddress,
       newRange.lowerTick,
       newRange.upperTick,
+      decimalsA,
+      decimalsB,
       config.dryRun
     );
     
