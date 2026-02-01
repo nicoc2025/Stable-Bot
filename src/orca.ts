@@ -1,6 +1,6 @@
 /**
  * Orca Whirlpools SDK helpers
- * Handles all interactions with Orca Whirlpools on Solana using v0.18.0 SDK
+ * Handles all interactions with Orca Whirlpools on Solana
  */
 
 import {
@@ -18,22 +18,24 @@ import {
   getAllPositionAccountsByOwner,
   decreaseLiquidityQuoteByLiquidityWithParams,
   increaseLiquidityQuoteByInputTokenWithParams,
-  type Whirlpool,
-  type Position,
 } from '@orca-so/whirlpools-sdk';
-import { Percentage, type TokenExtensionContext } from '@orca-so/common-sdk';
+import { Percentage } from '@orca-so/common-sdk';
 import { Wallet } from '@coral-xyz/anchor';
 import { readFileSync } from 'fs';
 import { getLogger } from './logger.js';
-import type DecimalType from 'decimal.js';
 import BN from 'bn.js';
 import type { Config } from './config.js';
 
 const logger = getLogger('Orca');
 
-// Import Decimal properly for ESM
-const Decimal = (await import('decimal.js')).default;
-type Decimal = DecimalType;
+// Dynamic import for Decimal to handle ESM correctly
+let Decimal: any;
+async function getDecimal() {
+  if (!Decimal) {
+    Decimal = (await import('decimal.js')).default;
+  }
+  return Decimal;
+}
 
 export interface PositionInfo {
   address: PublicKey;
@@ -59,11 +61,11 @@ export interface WhirlpoolInfo {
 }
 
 export interface PriceRange {
-  lowerPrice: Decimal;
-  upperPrice: Decimal;
+  lowerPrice: any;
+  upperPrice: any;
   lowerTick: number;
   upperTick: number;
-  centerPrice: Decimal;
+  centerPrice: any;
 }
 
 export type OrcaClient = ReturnType<typeof buildWhirlpoolClient>;
@@ -142,7 +144,7 @@ export async function getWhirlpoolInfo(
 /**
  * Get current price from Whirlpool
  */
-export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number, decimalsB: number): Decimal {
+export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number, decimalsB: number): any {
   return PriceMath.sqrtPriceX64ToPrice(
     whirlpoolInfo.sqrtPrice,
     decimalsA,
@@ -153,15 +155,17 @@ export function getCurrentPrice(whirlpoolInfo: WhirlpoolInfo, decimalsA: number,
 /**
  * Calculate tick boundaries for a price range
  */
-export function calculateTickRange(
-  centerPrice: Decimal,
+export async function calculateTickRange(
+  centerPrice: any,
   rangeWidthPercent: number,
   tickSpacing: number,
   decimalsA: number,
   decimalsB: number
-): PriceRange {
+): Promise<PriceRange> {
+  const D = await getDecimal();
+  
   // Calculate lower and upper prices
-  const multiplier = new Decimal(1).plus(rangeWidthPercent);
+  const multiplier = new D(1).plus(rangeWidthPercent);
   const lowerPrice = centerPrice.div(multiplier);
   const upperPrice = centerPrice.mul(multiplier);
   
@@ -197,7 +201,7 @@ export function calculateTickRange(
 /**
  * Get price from tick index
  */
-export function tickToPrice(tick: number, decimalsA: number, decimalsB: number): Decimal {
+export function tickToPrice(tick: number, decimalsA: number, decimalsB: number): any {
   return PriceMath.tickIndexToPrice(tick, decimalsA, decimalsB);
 }
 
@@ -217,8 +221,8 @@ export async function findPositions(
     // Get all positions for the owner
     const allPositions = await getAllPositionAccountsByOwner(ctx, walletAddress);
     
-    // Filter for positions in this whirlpool
-    for (const posData of allPositions.values()) {
+    // Filter for positions in this whirlpool - iterate over the Map
+    allPositions.forEach((posData: any, address: string) => {
       if (posData.whirlpool.equals(whirlpoolPubkey)) {
         // Get the position address
         const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, posData.positionMint);
@@ -234,7 +238,7 @@ export async function findPositions(
           rewardOwed: posData.rewardInfos.map((r: any) => r.amountOwed),
         });
       }
-    }
+    });
   } catch (error) {
     logger.warn('Could not list positions', error);
   }
@@ -277,9 +281,9 @@ export function calculateEdgeDistance(
 }
 
 /**
- * Get token extension context (empty for non-Token2022 tokens)
+ * Empty token extension context for non-Token2022 tokens
  */
-function getEmptyTokenExtensionContext(): TokenExtensionContext {
+function getEmptyTokenExtensionCtx() {
   return {
     currentEpoch: 0,
     tokenMintWithProgramA: { address: PublicKey.default, tokenProgram: PublicKey.default },
@@ -369,7 +373,7 @@ export async function closePosition(
         tickUpperIndex: positionData.tickUpperIndex,
         liquidity: positionData.liquidity,
         slippageTolerance: slippage,
-        tokenExtensionCtx: getEmptyTokenExtensionContext(),
+        tokenExtensionCtx: getEmptyTokenExtensionCtx() as any,
       });
       
       // Decrease liquidity
@@ -378,7 +382,7 @@ export async function closePosition(
       logger.info(`Liquidity removed. Tx: ${sig}`);
     }
     
-    // Close position by burning the NFT (using collect fees to finalize)
+    // Collect remaining fees to finalize position
     const closeTx = await position.collectFees();
     const sig = await closeTx.buildAndExecute();
     logger.info(`Position finalized. Tx: ${sig}`);
@@ -415,13 +419,10 @@ export async function openPosition(
   }
   
   try {
-    // Get the funder from context
-    const funder = ctx.wallet.publicKey;
-    
     const { positionMint, tx } = await whirlpool.openPosition(
       lowerTick,
       upperTick,
-      Percentage.fromFraction(1, 100) // slippage
+      Percentage.fromFraction(1, 100)
     );
     
     const signature = await tx.buildAndExecute();
@@ -480,7 +481,7 @@ export async function depositLiquidity(
     tickLowerIndex: positionData.tickLowerIndex,
     tickUpperIndex: positionData.tickUpperIndex,
     slippageTolerance: slippage,
-    tokenExtensionCtx: getEmptyTokenExtensionContext(),
+    tokenExtensionCtx: getEmptyTokenExtensionCtx() as any,
   });
   
   if (dryRun) {
