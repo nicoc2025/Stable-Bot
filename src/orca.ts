@@ -240,6 +240,18 @@ export async function findPositions(
         
         logger.debug(`Found ${entries.length} total positions for wallet`);
         
+        // Log ALL positions to help identify the correct whirlpool address
+        logger.info(`=== ALL POSITIONS IN WALLET ===`);
+        for (const [key, posData] of entries) {
+          if (posData && posData.whirlpool) {
+            logger.info(`  Position: ${key}`);
+            logger.info(`    Whirlpool: ${posData.whirlpool.toBase58()}`);
+            logger.info(`    Tick Range: [${posData.tickLowerIndex}, ${posData.tickUpperIndex}]`);
+            logger.info(`    Liquidity: ${posData.liquidity?.toString() || 'N/A'}`);
+          }
+        }
+        logger.info(`=== TARGET WHIRLPOOL: ${whirlpoolPubkey.toBase58()} ===`);
+        
         for (const [key, posData] of entries) {
           if (posData && posData.whirlpool) {
             logger.debug(`Position whirlpool: ${posData.whirlpool.toBase58()}, target: ${whirlpoolPubkey.toBase58()}`);
