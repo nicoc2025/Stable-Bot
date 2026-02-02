@@ -163,6 +163,10 @@ async function runDaemon(): Promise<void> {
   
   const { ctx, client, wallet, connection } = await createOrcaClient(config);
   
+  // Store for balance checks in stats
+  globalConnection = connection;
+  globalWalletPublicKey = wallet.publicKey;
+  
   let state = createStrategyState();
   let decimalsA = 9; // Will be updated
   let decimalsB = 6; // Will be updated
