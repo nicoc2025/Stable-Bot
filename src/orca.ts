@@ -544,7 +544,8 @@ export async function closePosition(
 }
 
 /**
- * Open a new position with specified range
+ * Open a new position with specified range (NO metadata = cheaper)
+ * Uses raw instruction building to avoid expensive metadata account creation
  */
 export async function openPosition(
   ctx: WhirlpoolContext,
@@ -568,25 +569,107 @@ export async function openPosition(
   }
   
   try {
-    const { positionMint, tx } = await whirlpool.openPosition(
+    // Use openPosition (NOT openPositionWithMetadata) to save ~0.01+ SOL
+    // The SDK's whirlpool.openPosition internally may still create metadata
+    // So we build the instruction manually for maximum cost savings
+    const { WhirlpoolIx, TickUtil } = await import('@orca-so/whirlpools-sdk');
+    const { Keypair: SolanaKeypair, SystemProgram, Transaction } = await import('@solana/web3.js');
+    const { 
+      TOKEN_PROGRAM_ID, 
+      TOKEN_2022_PROGRAM_ID,
+      getAssociatedTokenAddressSync,
+      createAssociatedTokenAccountInstruction,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    } = await import('@solana/spl-token');
+    
+    const whirlpoolData = whirlpool.getData();
+    const wallet = ctx.wallet;
+    
+    // Generate new position mint keypair
+    const positionMintKeypair = SolanaKeypair.generate();
+    const positionMint = positionMintKeypair.publicKey;
+    
+    // Derive position PDA
+    const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, positionMint);
+    
+    // Derive position token account (ATA for the position NFT)
+    const positionTokenAccount = getAssociatedTokenAddressSync(
+      positionMint,
+      wallet.publicKey,
+      false,
+      TOKEN_PROGRAM_ID
+    );
+    
+    // Get tick arrays for the position
+    const tickLowerArrayPda = PDAUtil.getTickArrayFromTickIndex(
       lowerTick,
+      whirlpoolData.tickSpacing,
+      whirlpoolPubkey,
+      ORCA_WHIRLPOOL_PROGRAM_ID
+    );
+    const tickUpperArrayPda = PDAUtil.getTickArrayFromTickIndex(
       upperTick,
-      Percentage.fromFraction(1, 100) as any
+      whirlpoolData.tickSpacing,
+      whirlpoolPubkey,
+      ORCA_WHIRLPOOL_PROGRAM_ID
     );
     
-    const signature = await tx.buildAndExecute();
-    logger.info(`Position opened. Mint: ${positionMint.toBase58()}, Tx: ${signature}`);
+    logger.info(`Creating position with mint: ${positionMint.toBase58()}`);
     
-    // Get position address from mint
-    const positionPda = PDAUtil.getPosition(
-      ORCA_WHIRLPOOL_PROGRAM_ID,
-      positionMint
-    );
+    // Build the openPosition instruction (without metadata)
+    const openPositionIx = WhirlpoolIx.openPositionIx(ctx.program, {
+      whirlpool: whirlpoolPubkey,
+      owner: wallet.publicKey,
+      positionPda: positionPda,
+      positionMint: positionMint,
+      positionTokenAccount: positionTokenAccount,
+      tickLowerIndex: lowerTick,
+      tickUpperIndex: upperTick,
+      funder: wallet.publicKey,
+    });
+    
+    // Build transaction
+    const tx = new Transaction();
+    tx.add(...openPositionIx.instructions);
+    
+    // Sign and send
+    tx.feePayer = wallet.publicKey;
+    tx.recentBlockhash = (await ctx.connection.getLatestBlockhash()).blockhash;
+    
+    // Sign with both wallet and position mint keypair
+    tx.partialSign(positionMintKeypair);
+    const signedTx = await wallet.signTransaction(tx);
+    
+    const signature = await ctx.connection.sendRawTransaction(signedTx.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: 'confirmed',
+    });
+    
+    await ctx.connection.confirmTransaction(signature, 'confirmed');
+    
+    logger.info(`Position opened (no metadata, cheaper). Mint: ${positionMint.toBase58()}, Tx: ${signature}`);
     
     return positionPda.publicKey;
-  } catch (error) {
-    logger.error('Failed to open position', error);
-    return null;
+  } catch (error: any) {
+    logger.warn(`Raw openPosition failed: ${error.message}, falling back to SDK method...`);
+    
+    // Fallback to SDK method if raw instruction fails
+    try {
+      const { positionMint, tx } = await whirlpool.openPosition(
+        lowerTick,
+        upperTick,
+        Percentage.fromFraction(1, 100) as any
+      );
+      
+      const signature = await tx.buildAndExecute();
+      logger.info(`Position opened (SDK fallback). Mint: ${positionMint.toBase58()}, Tx: ${signature}`);
+      
+      const positionPda = PDAUtil.getPosition(ORCA_WHIRLPOOL_PROGRAM_ID, positionMint);
+      return positionPda.publicKey;
+    } catch (fallbackError) {
+      logger.error('Both position open methods failed', fallbackError);
+      return null;
+    }
   }
 }
 
