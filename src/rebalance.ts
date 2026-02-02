@@ -193,8 +193,10 @@ export async function executeRebalance(
     logger.error('Rebalance failed', error);
   }
   
-  // Update state
-  const newState = result.success ? markRebalanceComplete(state) : state;
+  // Update state - use markRebalanceFailed if failed to reset dwell without starting cooldown
+  const newState = result.success 
+    ? markRebalanceComplete(state) 
+    : markRebalanceFailed(state);
   
   return { result, newState };
 }
