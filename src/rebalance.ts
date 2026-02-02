@@ -20,7 +20,7 @@ import {
 } from './orca.js';
 import type { Config } from './config.js';
 import type { StrategyState } from './strategy.js';
-import { markRebalanceComplete } from './strategy.js';
+import { markRebalanceComplete, markRebalanceFailed } from './strategy.js';
 
 const logger = getLogger('Rebalance');
 
