@@ -43,7 +43,7 @@ export async function getSolPriceUsd(): Promise<number | null> {
       throw new Error(`HTTP ${response.status}`);
     }
     
-    const data = await response.json();
+    const data = await response.json() as { solana?: { usd?: number } };
     const price = data?.solana?.usd;
     
     if (typeof price === 'number' && price > 0) {
