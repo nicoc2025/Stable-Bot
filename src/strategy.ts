@@ -261,12 +261,29 @@ export function runStrategyEvaluation(
 }
 
 /**
- * Mark rebalance as completed in state
+ * Mark rebalance as completed in state (success)
  */
 export function markRebalanceComplete(state: StrategyState): StrategyState {
+  const now = Date.now();
+  logger.info(`✓ Rebalance completed. Cooldown started: ${now}`);
+  logger.info(`  Next rebalance allowed after cooldown period`);
   return {
     ...state,
-    lastRebalanceTime: Date.now(),
+    lastRebalanceTime: now,
+    dwellStartTime: null,
+    dwellReason: null,
+    triggerReason: 'none',
+  };
+}
+
+/**
+ * Mark rebalance as failed - reset dwell but don't update lastRebalanceTime
+ * This prevents immediate re-trigger but doesn't start cooldown
+ */
+export function markRebalanceFailed(state: StrategyState): StrategyState {
+  logger.info(`✗ Rebalance failed. Dwell reset, no cooldown applied.`);
+  return {
+    ...state,
     dwellStartTime: null,
     dwellReason: null,
     triggerReason: 'none',
