@@ -224,6 +224,9 @@ async function runDaemon(): Promise<void> {
         // Show preview
         await printRebalancePreview(position, whirlpoolInfo, config, decimalsA, decimalsB);
         
+        // Get SOL balance before rebalance
+        const solBalanceBefore = await connection.getBalance(wallet.publicKey);
+        
         // Execute rebalance
         const { result, newState } = await executeRebalance(
           config,
@@ -238,6 +241,25 @@ async function runDaemon(): Promise<void> {
         
         if (result.success) {
           logger.info('Rebalance completed successfully');
+          
+          // Track stats
+          sessionStats.rebalanceCount++;
+          
+          // Track fees collected
+          if (result.feesCollected) {
+            try {
+              sessionStats.totalFeeA = sessionStats.totalFeeA.add(new BN(result.feesCollected.tokenA));
+              sessionStats.totalFeeB = sessionStats.totalFeeB.add(new BN(result.feesCollected.tokenB));
+            } catch (e) {
+              logger.debug('Could not parse fees for stats');
+            }
+          }
+          
+          // Track SOL cost
+          const solBalanceAfter = await connection.getBalance(wallet.publicKey);
+          const solCost = solBalanceBefore - solBalanceAfter; // positive = cost, negative = refund
+          sessionStats.totalSolCostLamports += solCost;
+          
         } else {
           logger.error('Rebalance failed', result.error);
         }
