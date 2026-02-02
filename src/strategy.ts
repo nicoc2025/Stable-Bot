@@ -146,7 +146,7 @@ export function processDwell(
   if (!triggerResult.shouldRebalance) {
     // Condition not met - reset dwell if it was active
     if (state.dwellStartTime !== null) {
-      logger.dwellReset(`Condition cleared (was: ${state.dwellReason})`);
+      logger.info(`🔄 DWELL RESET: Condition cleared (was: ${state.dwellReason})`);
       newState.dwellStartTime = null;
       newState.dwellReason = null;
     }
@@ -156,7 +156,7 @@ export function processDwell(
   // Condition is met
   if (state.dwellStartTime === null || state.dwellReason !== triggerResult.reason) {
     // Start new dwell period
-    logger.dwellStarted(triggerResult.reason, params.dwellSeconds);
+    logger.info(`⏱️ DWELL STARTED: ${triggerResult.reason} - waiting ${params.dwellSeconds}s before rebalance`);
     newState.dwellStartTime = now;
     newState.dwellReason = triggerResult.reason;
     return { dwellCompleted: false, state: newState };
@@ -166,11 +166,13 @@ export function processDwell(
   const elapsedSeconds = (now - state.dwellStartTime) / 1000;
   
   if (elapsedSeconds >= params.dwellSeconds) {
-    logger.info(`Dwell completed after ${elapsedSeconds.toFixed(1)}s`);
+    logger.info(`✓ DWELL COMPLETED after ${elapsedSeconds.toFixed(1)}s (required: ${params.dwellSeconds}s)`);
     return { dwellCompleted: true, state: newState };
   }
   
-  logger.debug(`Dwell in progress: ${elapsedSeconds.toFixed(1)}s / ${params.dwellSeconds}s`);
+  // Still in dwell period
+  const remaining = params.dwellSeconds - elapsedSeconds;
+  logger.info(`⏱️ DWELL IN PROGRESS: ${elapsedSeconds.toFixed(1)}s / ${params.dwellSeconds}s (${remaining.toFixed(1)}s remaining)`);
   return { dwellCompleted: false, state: newState };
 }
 
