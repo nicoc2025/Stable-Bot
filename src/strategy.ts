@@ -184,12 +184,19 @@ export function checkCooldown(
   const now = Date.now();
   const timeSinceLastRebalance = (now - state.lastRebalanceTime) / 1000;
   
+  // If never rebalanced (lastRebalanceTime = 0), allow immediately
+  if (state.lastRebalanceTime === 0) {
+    logger.debug('No previous rebalance - cooldown not applicable');
+    return { canRebalance: true, timeRemaining: 0 };
+  }
+  
   if (timeSinceLastRebalance < params.minRebalanceIntervalSeconds) {
     const timeRemaining = params.minRebalanceIntervalSeconds - timeSinceLastRebalance;
-    logger.rebalanceSkipped(`Cooldown active: ${timeRemaining.toFixed(0)}s remaining`);
+    logger.info(`⏳ COOLDOWN ACTIVE: ${timeRemaining.toFixed(0)}s remaining (min interval: ${params.minRebalanceIntervalSeconds}s)`);
     return { canRebalance: false, timeRemaining };
   }
   
+  logger.debug(`Cooldown passed: ${timeSinceLastRebalance.toFixed(0)}s since last rebalance`);
   return { canRebalance: true, timeRemaining: 0 };
 }
 
