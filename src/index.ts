@@ -397,14 +397,83 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Format duration in human readable format
+ */
+function formatDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`;
+  }
+  return `${seconds}s`;
+}
+
+/**
+ * Print session summary on shutdown
+ */
+async function printSessionSummary(): Promise<void> {
+  const duration = Date.now() - sessionStats.startTime;
+  const solCost = sessionStats.totalSolCostLamports / 1_000_000_000;
+  
+  // Convert fees to human readable (assuming 6 decimals for stablecoins)
+  const feeA = sessionStats.totalFeeA.toNumber() / 1_000_000;
+  const feeB = sessionStats.totalFeeB.toNumber() / 1_000_000;
+  
+  // Fetch SOL price for USD conversion
+  const solPrice = await getSolPriceUsd();
+  
+  console.log('\n');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('                    SESSION SUMMARY');
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log(`  Session Duration:    ${formatDuration(duration)}`);
+  console.log(`  Rebalances:          ${sessionStats.rebalanceCount}`);
+  console.log('');
+  console.log('  Yield Collected:');
+  console.log(`    Token A (USD1):    ${feeA.toFixed(6)}`);
+  console.log(`    Token B (USDC):    ${feeB.toFixed(6)}`);
+  console.log(`    Combined:          ${(feeA + feeB).toFixed(6)} USD`);
+  console.log('');
+  console.log('  Total SOL Cost:');
+  if (solCost >= 0) {
+    console.log(`    SOL Spent:         ${solCost.toFixed(6)} SOL`);
+  } else {
+    console.log(`    SOL Refunded:      ${Math.abs(solCost).toFixed(6)} SOL`);
+  }
+  if (solPrice !== null) {
+    const usdCost = Math.abs(solCost) * solPrice;
+    console.log(`    USD Value:         ${solCost >= 0 ? '-' : '+'}$${usdCost.toFixed(2)} (@ $${solPrice.toFixed(2)}/SOL)`);
+  } else {
+    console.log(`    USD Value:         (price unavailable)`);
+  }
+  console.log('');
+  
+  // Net profit/loss
+  const totalYieldUsd = feeA + feeB;
+  if (solPrice !== null) {
+    const totalCostUsd = solCost * solPrice;
+    const netPnl = totalYieldUsd - totalCostUsd;
+    console.log('  Net P&L:');
+    console.log(`    ${netPnl >= 0 ? '+' : ''}$${netPnl.toFixed(2)} USD`);
+  }
+  console.log('═══════════════════════════════════════════════════════════');
+}
+
 // Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n\n👋 Shutting down gracefully...\n');
+process.on('SIGINT', async () => {
+  await printSessionSummary();
+  console.log('\n👋 Shutting down gracefully...\n');
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  console.log('\n\n👋 Received SIGTERM, shutting down...\n');
+process.on('SIGTERM', async () => {
+  await printSessionSummary();
+  console.log('\n👋 Received SIGTERM, shutting down...\n');
   process.exit(0);
 });
 
