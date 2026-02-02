@@ -675,6 +675,7 @@ export async function openPosition(
 
 /**
  * Deposit liquidity into a position
+ * Handles Token-2022 transfer fees by trying progressively smaller amounts
  */
 export async function depositLiquidity(
   ctx: WhirlpoolContext,
@@ -691,49 +692,71 @@ export async function depositLiquidity(
   const whirlpool = await client.getPool(positionData.whirlpool, IGNORE_CACHE);
   const whirlpoolData = whirlpool.getData();
   
-  // Use the larger amount as primary input
-  const inputTokenA = tokenAAmount.gt(new BN(0));
-  const inputAmount = inputTokenA ? tokenAAmount : tokenBAmount;
-  
-  if (inputAmount.isZero()) {
+  if (tokenAAmount.isZero() && tokenBAmount.isZero()) {
     logger.warn('No tokens to deposit');
     return true;
   }
   
-  const slippage = Percentage.fromFraction(1, 100); // 1%
-  
-  // Get quote for increasing liquidity
-  const quote = increaseLiquidityQuoteByInputTokenWithParams({
-    inputTokenMint: inputTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
-    inputTokenAmount: inputAmount,
-    tokenMintA: whirlpoolData.tokenMintA,
-    tokenMintB: whirlpoolData.tokenMintB,
-    tickCurrentIndex: whirlpoolData.tickCurrentIndex,
-    sqrtPrice: whirlpoolData.sqrtPrice,
-    tickLowerIndex: positionData.tickLowerIndex,
-    tickUpperIndex: positionData.tickUpperIndex,
-    slippageTolerance: slippage,
-    tokenExtensionCtx: getEmptyTokenExtensionCtx() as any,
-  });
-  
   if (dryRun) {
     logger.info('[DRY RUN] Would deposit liquidity', {
-      estimatedLiquidity: quote.liquidityAmount.toString(),
-      tokenAMax: quote.tokenMaxA.toString(),
-      tokenBMax: quote.tokenMaxB.toString(),
+      tokenA: tokenAAmount.toString(),
+      tokenB: tokenBAmount.toString(),
     });
     return true;
   }
   
-  try {
-    const increaseTx = await position.increaseLiquidity(quote);
-    const signature = await increaseTx.buildAndExecute();
-    logger.info(`Liquidity deposited. Tx: ${signature}`);
-    return true;
-  } catch (error) {
-    logger.error('Failed to deposit liquidity', error);
-    return false;
+  // For Token-2022 with transfer fees, we need to account for the fee deduction
+  // Try progressively smaller percentages until one works
+  const percentagesToTry = [90, 85, 80, 75, 70, 60, 50];
+  
+  for (const percent of percentagesToTry) {
+    try {
+      logger.info(`Attempting deposit with ${percent}% of available balance...`);
+      
+      // Apply percentage reduction to account for transfer fees
+      const adjustedA = tokenAAmount.muln(percent).divn(100);
+      const adjustedB = tokenBAmount.muln(percent).divn(100);
+      
+      // Use the larger adjusted amount as primary input
+      const useTokenA = adjustedA.gt(adjustedB);
+      const inputAmount = useTokenA ? adjustedA : adjustedB;
+      
+      if (inputAmount.isZero()) {
+        logger.warn('Adjusted amount is zero, skipping');
+        continue;
+      }
+      
+      const slippage = Percentage.fromFraction(3, 100); // 3% slippage for Token-2022
+      
+      // Get quote for increasing liquidity
+      const quote = increaseLiquidityQuoteByInputTokenWithParams({
+        inputTokenMint: useTokenA ? whirlpoolData.tokenMintA : whirlpoolData.tokenMintB,
+        inputTokenAmount: inputAmount,
+        tokenMintA: whirlpoolData.tokenMintA,
+        tokenMintB: whirlpoolData.tokenMintB,
+        tickCurrentIndex: whirlpoolData.tickCurrentIndex,
+        sqrtPrice: whirlpoolData.sqrtPrice,
+        tickLowerIndex: positionData.tickLowerIndex,
+        tickUpperIndex: positionData.tickUpperIndex,
+        slippageTolerance: slippage,
+        tokenExtensionCtx: getEmptyTokenExtensionCtx() as any,
+      });
+      
+      logger.info(`Quote generated: ${quote.liquidityAmount.toString()} liquidity, tokenA: ${quote.tokenMaxA.toString()}, tokenB: ${quote.tokenMaxB.toString()}`);
+      
+      const increaseTx = await position.increaseLiquidity(quote);
+      const signature = await increaseTx.buildAndExecute();
+      logger.info(`✓ Liquidity deposited at ${percent}%. Tx: ${signature}`);
+      return true;
+      
+    } catch (error: any) {
+      logger.warn(`Deposit at ${percent}% failed: ${error.message?.slice(0, 100)}`);
+      // Continue to next percentage
+    }
   }
+  
+  logger.error('All deposit attempts failed');
+  return false;
 }
 
 /**
