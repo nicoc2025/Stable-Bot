@@ -28,8 +28,31 @@ import {
   executeRebalance,
   printRebalancePreview,
 } from './rebalance.js';
+import { getSolPriceUsd } from './price.js';
+import BN from 'bn.js';
 
 const logger = getLogger('Main');
+
+// Session statistics (reset on each bot start)
+interface SessionStats {
+  startTime: number;
+  rebalanceCount: number;
+  totalFeeA: BN;        // Raw token units (Token A - e.g., USD1)
+  totalFeeB: BN;        // Raw token units (Token B - e.g., USDC)
+  totalSolCostLamports: number;
+}
+
+const sessionStats: SessionStats = {
+  startTime: Date.now(),
+  rebalanceCount: 0,
+  totalFeeA: new BN(0),
+  totalFeeB: new BN(0),
+  totalSolCostLamports: 0,
+};
+
+// Store connection and wallet for balance checks
+let globalConnection: any = null;
+let globalWalletPublicKey: any = null;
 
 const program = new Command();
 
