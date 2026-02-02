@@ -621,7 +621,7 @@ export async function openPosition(
       whirlpool: whirlpoolPubkey,
       owner: wallet.publicKey,
       positionPda: positionPda,
-      positionMint: positionMint,
+      positionMintAddress: positionMint,
       positionTokenAccount: positionTokenAccount,
       tickLowerIndex: lowerTick,
       tickUpperIndex: upperTick,
